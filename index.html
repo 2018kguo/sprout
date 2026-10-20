@@ -76,6 +76,8 @@ mark.tk { background: var(--tk-bg); color: var(--tk); border-radius: 3px; font: 
 .meta button { font-size: 12px; padding: 1px 7px; }
 .meta .slopn { color: var(--slop); font-weight: 600; }
 .meta.err { color: var(--slop); }
+.meta.hint { opacity: .75; font-style: italic; }
+#status { font-size: 12px; color: var(--accent); }
 .meta .sp { flex: 1; }
 .refine { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 12px 0; }
 .refine input { flex: 1 1 200px; border: 1px solid var(--accent); border-radius: 7px; padding: 3px 8px; background: var(--card); outline: none; }
@@ -102,6 +104,7 @@ footer b { color: var(--fg); font-weight: 500; }
   <button id="all" title="Draft every outline line that has no draft yet">Draft all</button>
   <button id="copy" title="Copy kept paragraphs as Markdown">Copy</button>
   <button id="settings" aria-expanded="false">Voice & bans</button>
+  <span id="status"></span>
   <span id="saved"></span>
 </header>
 <div id="drawer">
@@ -127,7 +130,6 @@ const CHIPS = ["shorter", "punchier", "more concrete", "plainer", "warmer", "add
 
 let doc;
 const gens = new Map(); // row id -> {ctrl, text, t0, note}
-const timers = new Map();
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const newRow = (text = "") => ({ id: crypto.randomUUID(), text, variants: [], vi: 0, accepted: false, tossed: [] });
@@ -190,7 +192,28 @@ function buildPrompt(row, extra) {
   if (row.tossed.length) p += `\nThe writer rejected these drafts for this line. Take a clearly different approach:\n${row.tossed.map(t => "- " + t).join("\n")}\n`;
   const bans = doc.bans.filter(b => b.trim());
   if (bans.length) p += `\nNever use these words or patterns: ${bans.join(" | ")}\n`;
-  return p + extra + `\nWrite only the prose for the → line: one paragraph, about 60 to 140 words unless the line asks otherwise. No heading, no preamble, no quotes around it.`;
+  return p + extra + `\nWrite only the prose for the → line. ${LENGTH_RULE} No heading, no preamble, no quotes around it.`;
+}
+const LENGTH_RULE = "Length follows substance: expand only what the writer gave you. A bare phrase gets one to three plain sentences; a line with details gets a fuller paragraph. Never add anecdotes, examples, events, numbers or names the writer didn't give.";
+
+// One request reads the whole outline and drafts (or skips) every line that needs it.
+function buildPassPrompt(nums) {
+  let p = `Piece: ${doc.title || "(untitled)"}\n\nOutline (numbered; indentation means nesting):\n`;
+  p += doc.rows.map((r, i) => r.text.trim() ? `${i + 1}. ${r.text.replace(/\s*\n\s*/g, " ")}` : "").filter(Boolean).join("\n") + "\n";
+  const kept = doc.rows.map((r, i) => r.accepted && cur(r) ? `[${i + 1}] ${cur(r)}` : "").filter(Boolean);
+  if (kept.length) p += `\nParagraphs the writer already kept:\n${kept.join("\n\n")}\n`;
+  if (doc.voice.trim()) p += `\nWriter's voice notes:\n${doc.voice}\n`;
+  const bans = doc.bans.filter(b => b.trim());
+  if (bans.length) p += `\nNever use these words or patterns: ${bans.join(" | ")}\n`;
+  return p + `
+Lines to handle now: ${nums.join(", ")}
+
+Read the whole outline first. The paragraphs must read as one piece: each covers only its own line, picks up from the one before, and never repeats a neighbor.
+For each line to handle, output "@@<line number>" on its own line, then EITHER the prose for that line OR "SKIP: <a few words to the writer>".
+SKIP when the line is a title, thesis or section label that the lines under it develop ("SKIP: the lines below cover this").
+SKIP when writing more than a restatement would mean inventing things; say what's missing ("SKIP: what went wrong? give me the story").
+${LENGTH_RULE}
+Output nothing outside the @@ blocks.`;
 }
 
 // ---------- generation ----------
@@ -233,12 +256,59 @@ async function generate(row, { extra = "", replace = false, note = "" } = {}) {
   } finally { release(); }
 }
 
-function schedule(row, ms = 800) {
-  clearTimeout(timers.get(row.id));
-  timers.set(row.id, setTimeout(() => {
-    const words = row.text.trim().split(/\s+/).filter(Boolean).length;
-    if (!row.accepted && !isHeading(row) && words >= 2 && row.text !== row.genFor) generate(row);
-  }, ms));
+// The line you're typing waits until you leave it or go idle; unchanged lines are never redrafted.
+let passTimers = [], passing = false, passAgain = false;
+function schedulePass() {
+  passTimers.forEach(clearTimeout);
+  passTimers = [setTimeout(() => pass(false), 1200), setTimeout(() => pass(true), 4000)];
+}
+const needsDraft = r => !isHeading(r) && r.text.trim() && !r.accepted && !gens.has(r.id) && r.text !== r.genFor;
+
+async function pass(includeFocused) {
+  if (passing) return void (passAgain = true);
+  const focused = rowOf(document.activeElement);
+  const todo = doc.rows.filter(r => needsDraft(r) && (includeFocused || r !== focused));
+  if (!todo.length) return;
+  passing = true; $("#status").textContent = "reading your outline…";
+  const sent = new Map(todo.map(r => [doc.rows.indexOf(r) + 1, { row: r, text: r.text, st: null }]));
+  todo.forEach(r => { r.genFor = r.text; r.err = ""; r.skip = ""; });
+  const fetchCtrl = new AbortController();
+  // Route each "@@n" block to its row as it streams in.
+  const route = (all, done) => {
+    for (const [, n, body] of all.matchAll(/^@@(\d+)[^\n]*\n([\s\S]*?)(?=^@@\d|$(?![\s\S]))/gm)) {
+      const s = sent.get(Number(n)); if (!s) continue;
+      const { row } = s, t = body.trim();
+      if (row.text !== s.text || (s.st && gens.get(row.id) !== s.st)) continue; // edited or tossed mid-pass
+      if (!done && /^S(K(I(P)?)?)?$/.test(t)) continue; // might become SKIP: don't flash it
+      if (t.startsWith("SKIP")) { row.skip = t.replace(/^SKIP:?\s*/, "") || "needs more to go on"; row.skipFor = row.text; if (done) renderDraft(row); continue; }
+      if (!s.st) { s.st = { ctrl: new AbortController(), text: "", note: "drafting…" }; gens.set(row.id, s.st); s.st.t0 = t0; renderDraft(row); }
+      s.st.text = t; renderDraft(row, true);
+      if (done && t) {
+        gens.delete(row.id);
+        row.variants.push(t); row.variants = row.variants.slice(-8); row.vi = row.variants.length - 1;
+        row.ms = Math.round(performance.now() - t0); renderDraft(row);
+      }
+    }
+  };
+  let all = "", t0;
+  await slot();
+  try {
+    t0 = performance.now();
+    const [provider, model] = doc.model.split(":");
+    const res = await fetch("/gen", { method: "POST", signal: fetchCtrl.signal,
+      body: JSON.stringify({ provider, model, system: SYSTEM, prompt: buildPassPrompt([...sent.keys()]) }) });
+    if (!res.ok) throw new Error(await res.text());
+    for await (const chunk of res.body.pipeThrough(new TextDecoderStream())) { all += chunk; route(all.split("\0")[0], false); }
+    const [text, err] = all.split("\0");
+    if (err) throw new Error(err);
+    route(text, true);
+  } catch (e) {
+    for (const { row } of sent.values()) { if (row.genFor === row.text) row.genFor = undefined; row.err = String(e.message || e); }
+  } finally {
+    for (const { row, st } of sent.values()) { if (st && gens.get(row.id) === st) gens.delete(row.id); renderDraft(row); }
+    release(); save(); passing = false; $("#status").textContent = "";
+    if (passAgain) { passAgain = false; schedulePass(); }
+  }
 }
 
 // ---------- actions ----------
@@ -303,6 +373,8 @@ function renderDraft(row, chunk = false) {
       ${row.variants.length > 1 ? `<button data-a="prev">‹</button>${row.vi + 1}/${row.variants.length}<button data-a="next">›</button>` : ""}
       <span class="sp"></span>${n ? `<span class="slopn">${n} slop</span>` : ""}${row.ms ? `<span>${(row.ms / 1000).toFixed(1)}s</span>` : ""}</div>`;
   }
+  else if (row.skip && row.skipFor === row.text && !row.accepted)
+    html = `<div class="meta hint">${esc(row.skip)}<button data-a="another">draft anyway</button></div>`;
   else if (row.tossed.length && !row.accepted) html = `<div class="meta">tossed<button data-a="another">another take<kbd>⌘↵</kbd></button></div>`;
   if (row.err) html += `<div class="meta err">${esc(row.err)} <button data-a="another">retry</button></div>`;
   if (row.refining) html += `<div class="refine"><input placeholder="how should it change? ↵" aria-label="Refine instruction">
@@ -330,7 +402,7 @@ $("#rows").addEventListener("input", e => {
   if (e.target.tagName === "TEXTAREA") {
     row.text = e.target.value;
     rowEl(row).classList.toggle("heading", isHeading(row));
-    save(); schedule(row);
+    save(); schedulePass();
   } else if (e.target.classList.contains("ink")) { row.variants[row.vi] = e.target.innerText; save(); }
 });
 
@@ -354,7 +426,7 @@ $("#rows").addEventListener("keydown", e => {
     const tail = ta.value.slice(ta.selectionEnd);
     row.text = ta.value.slice(0, ta.selectionStart);
     const r = newRow(tail); doc.rows.splice(i + 1, 0, r);
-    save(); render(r.id, 0); schedule(row, 0);
+    save(); render(r.id, 0); schedulePass();
   }
   else if (e.key === "Tab") { e.preventDefault(); keep(row); }
   else if (e.key === "Escape") { e.preventDefault(); toss(row); }
@@ -381,7 +453,7 @@ $("#rows").addEventListener("paste", e => {
   added[added.length - 1].text += after;
   doc.rows.splice(i + 1, 0, ...added);
   save(); render(added[added.length - 1].id);
-  [row, ...added].forEach(r => schedule(r, 0));
+  schedulePass();
 });
 
 $("#rows").addEventListener("click", e => {
@@ -416,7 +488,7 @@ $("#voice").oninput = e => { doc.voice = e.target.value; save(); };
 $("#bans").oninput = e => { doc.bans = e.target.value.split("\n"); save(); doc.rows.forEach(r => gens.has(r.id) || renderDraft(r)); };
 $("#reroll").onchange = e => { doc.reroll = e.target.checked; save(); };
 $("#settings").onclick = e => { const o = $("#drawer").classList.toggle("open"); e.target.setAttribute("aria-expanded", o); };
-$("#all").onclick = () => doc.rows.filter(r => !r.variants.length && !gens.has(r.id) && !isHeading(r) && r.text.trim()).forEach(r => generate(r));
+$("#all").onclick = () => { doc.rows.forEach(r => { if (!r.variants.length) r.genFor = undefined; }); pass(true); };
 $("#copy").onclick = async () => {
   const parts = doc.rows.filter(r => isHeading(r) || (r.accepted && cur(r))).map(r => isHeading(r) ? r.text.trim() : cur(r).trim());
   const md = (doc.title ? `# ${doc.title}\n\n` : "") + parts.join("\n\n");
