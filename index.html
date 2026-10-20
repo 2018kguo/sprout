@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprout</title>
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1d1c1a; --mute: #8a867e; --line: #e8e4dc; --ghost: #6f6a62;
+  --accent: #3b6df0; --slop: #e5484d; --slop-bg: #fde8e8; --tk: #a96b00; --tk-bg: #fff2cc;
+  --card: #ffffff; --shimmer: #efebe3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161514; --fg: #ecebe8; --mute: #8f8b84; --line: #2a2826; --ghost: #a9a49b;
+    --accent: #7c9cff; --slop: #ff6b6f; --slop-bg: #3a1d1e; --tk: #f0b443; --tk-bg: #3a2f14;
+    --card: #1d1c1a; --shimmer: #262422;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 1px solid var(--line); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: var(--mute); }
+kbd { font: 11px ui-monospace, monospace; color: var(--mute); margin-left: 4px; }
+
+header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
+  display: flex; gap: 8px; align-items: center; padding: 10px 16px; flex-wrap: wrap; }
+#title { flex: 1 1 240px; min-width: 0; border: 0; background: none; font-size: 20px; font-weight: 600; outline: none; }
+#saved { font-size: 12px; color: var(--mute); min-width: 52px; text-align: right; }
+#saved.bad { color: var(--slop); font-weight: 600; }
+select { background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
+
+#drawer { display: none; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#drawer.open { display: flex; }
+#drawer label { flex: 1 1 300px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--mute); }
+#drawer textarea { min-height: 120px; resize: vertical; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 13px; }
+
+main { max-width: 1180px; margin: 0 auto; padding: 18px 16px 120px; }
+.row { display: grid; grid-template-columns: minmax(200px, 33%) 1fr; gap: 28px; padding: 6px 0; }
+@media (max-width: 760px) { .row { grid-template-columns: 1fr; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); } }
+
+.sk textarea { width: 100%; resize: none; border: 0; outline: none; background: none; padding: 6px 8px; border-radius: 8px;
+  font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); field-sizing: content; min-height: 32px; overflow: hidden; }
+.row:focus-within .sk textarea { background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+.row.heading .sk textarea { font: 600 17px/1.4 -apple-system, system-ui, sans-serif; padding-top: 18px; }
+.row.heading .dr { display: none; }
+@media (min-width: 761px) { .row.heading { grid-template-columns: 1fr; } }
+
+.dr { perspective: 700px; min-width: 0; }
+.draft { font: 17px/1.62 "Iowan Old Style", "Palatino", Georgia, serif; padding: 4px 12px; border-left: 2px solid transparent;
+  border-radius: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.draft.ghost { color: var(--ghost); border-left-color: var(--line); border-left-style: dashed; cursor: text; }
+.row:focus-within .draft.ghost { color: var(--fg); border-left-color: var(--accent); }
+.draft.ink { color: var(--fg); border-left-color: transparent; outline: none; }
+.draft.ink:focus { border-left-color: var(--mute); }
+.draft.live::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+.draft.wait { height: 58px; border-radius: 8px; background: linear-gradient(90deg, var(--shimmer) 0, var(--card) 50%, var(--shimmer) 100%) 0 0 / 200% 100%;
+  animation: shimmer 1.1s linear infinite; border: 0; }
+.pop { animation: pop .38s cubic-bezier(.2, 1.4, .4, 1) both; transform-origin: 0 100%; }
+.toss { animation: toss .22s ease-in forwards; }
+.settle { animation: settle .5s ease-out; }
+@keyframes pop { from { opacity: 0; transform: rotateX(38deg) translateY(14px) scale(.94); filter: blur(5px); } }
+@keyframes toss { to { opacity: 0; transform: translateX(24px) rotateY(-14deg); filter: blur(6px); } }
+@keyframes settle { from { background: color-mix(in srgb, var(--accent) 14%, transparent); } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .pop, .toss, .settle, .wait, .live::after { animation: none !important; } }
+
+mark.slop { background: var(--slop-bg); color: var(--slop); text-decoration: underline wavy var(--slop); text-underline-offset: 3px; border-radius: 3px; }
+mark.tk { background: var(--tk-bg); color: var(--tk); border-radius: 3px; font: 13px ui-monospace, monospace; padding: 0 3px; }
+
+.meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 4px 12px 0; font-size: 12px; color: var(--mute);
+  opacity: 0; transition: opacity .15s; }
+.row:focus-within .meta, .row:hover .meta, .meta.err { opacity: 1; }
+.meta button { font-size: 12px; padding: 1px 7px; }
+.meta .slopn { color: var(--slop); font-weight: 600; }
+.meta.err { color: var(--slop); }
+.meta .sp { flex: 1; }
+.refine { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 12px 0; }
+.refine input { flex: 1 1 200px; border: 1px solid var(--accent); border-radius: 7px; padding: 3px 8px; background: var(--card); outline: none; }
+.refine button { font-size: 12px; }
+
+#ban { position: absolute; display: none; z-index: 9; font-size: 12px; background: var(--fg); color: var(--bg); border: 0; padding: 3px 9px; }
+#toast { position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 6px 12px;
+  border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.on { opacity: 1; }
+footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 7px 16px;
+  font-size: 12px; color: var(--mute); text-align: center; }
+footer b { color: var(--fg); font-weight: 500; }
+@media (max-width: 760px) { footer { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <input id="title" placeholder="Untitled piece" aria-label="Title">
+  <select id="model" aria-label="Model">
+    <option value="claude:haiku">Claude Haiku: fast</option>
+    <option value="claude:sonnet">Claude Sonnet</option>
+    <option value="codex:">Codex: no streaming</option>
+  </select>
+  <button id="all" title="Draft every outline line that has no draft yet">Draft all</button>
+  <button id="copy" title="Copy kept paragraphs as Markdown">Copy</button>
+  <button id="settings" aria-expanded="false">Voice & bans</button>
+  <span id="saved"></span>
+</header>
+<div id="drawer">
+  <label>Voice notes: how you write, who it's for, a sample paragraph
+    <textarea id="voice" placeholder="Short sentences. Dry humor. Audience: engineers who've been burned before."></textarea></label>
+  <label>Banned phrases, one per line. /regex/ works. Highlighted in drafts and sent to the model.
+    <textarea id="bans"></textarea>
+    <span><input type="checkbox" id="reroll"> Auto-reroll a draft that uses a banned phrase (once)</span></label>
+</div>
+<main id="rows"></main>
+<button id="ban">Ban phrase</button>
+<div id="toast"></div>
+<footer><b>↵</b> new line · <b>Tab</b> keep · <b>Esc</b> toss · <b>⌘↵</b> another take · <b>⌘K</b> refine ·
+  <b>⌥, ⌥.</b> flip takes · <b>#</b> heading · select draft text to ban it</footer>
+
+<script>
+const DEFAULT_BANS = ["—", "delve", "tapestry", "testament to", "in today's", "fast-paced", "ever-evolving", "navigate the",
+  "navigating the", "landscape", "realm", "embark", "journey", "elevate", "seamless", "leverage", "unlock", "game-changer",
+  "pivotal", "crucial", "foster", "underscore", "showcase", "vibrant", "moreover", "furthermore", "in conclusion",
+  "at the end of the day", "/\\bit'?s not (just )?[^.,;]{1,40}[,;] (it'?s|but)\\b/", "/\\bnot (just|only) [^.]{1,40}, but\\b/"];
+const SYSTEM = `You are a ghostwriter drafting one paragraph at a time from a writer's rough outline. Write like a sharp human essayist: concrete nouns, specific claims, plain words, varied sentence length. Hard rules: no em dashes; no "it's not X, it's Y"; no triplets of adjectives; no throat-clearing openers or summarizing closers; no rhetorical questions unless the outline asks for one. Never invent specific facts, numbers, names or quotes: write around the gap, or, only when a specific fact is essential, leave one [TK: what's needed]. Output only the paragraph.`;
+const CHIPS = ["shorter", "punchier", "more concrete", "plainer", "warmer", "add an example", "cut the last sentence"];
+
+let doc;
+const gens = new Map(); // row id -> {ctrl, text, t0, note}
+const timers = new Map();
+const $ = s => document.querySelector(s);
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const newRow = (text = "") => ({ id: crypto.randomUUID(), text, variants: [], vi: 0, accepted: false, tossed: [] });
+const isHeading = r => r.text.trimStart().startsWith("#");
+const rowEl = r => document.querySelector(`.row[data-id="${r.id}"]`);
+const cur = r => r.variants[r.vi];
+
+// ---------- persistence ----------
+let saveT;
+function save() {
+  clearTimeout(saveT);
+  $("#saved").textContent = "…"; $("#saved").className = "";
+  saveT = setTimeout(async () => {
+    try {
+      const res = await fetch("/doc", { method: "PUT", body: JSON.stringify(doc) });
+      if (!res.ok) throw new Error(await res.text());
+      $("#saved").textContent = "saved";
+    } catch (e) { $("#saved").textContent = "NOT SAVED"; $("#saved").className = "bad"; $("#saved").title = String(e); }
+  }, 400);
+}
+
+// ---------- slop ----------
+function banRes() {
+  return doc.bans.map(b => b.trim()).filter(Boolean).flatMap(b => {
+    const m = b.match(/^\/(.+)\/$/);
+    try { return [new RegExp(m ? m[1] : b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")]; } catch { return []; }
+  });
+}
+function marks(t) {
+  const out = [];
+  for (const re of banRes()) for (const m of t.matchAll(re)) if (m[0]) out.push([m.index, m.index + m[0].length, "slop", m[0]]);
+  for (const m of t.matchAll(/\[TK[^\]]*\]/g)) out.push([m.index, m.index + m[0].length, "tk", m[0]]);
+  out.sort((a, b) => a[0] - b[0]);
+  return out.filter((m, i) => !out.slice(0, i).some(p => m[0] < p[1])); // drop overlaps
+}
+const slopFound = t => marks(t).filter(m => m[2] === "slop").map(m => m[3]);
+function hl(t) {
+  let html = "", at = 0;
+  for (const [s, e, cls] of marks(t)) { html += esc(t.slice(at, s)) + `<mark class="${cls}">${esc(t.slice(s, e))}</mark>`; at = e; }
+  return html + esc(t.slice(at));
+}
+
+// ---------- prompt ----------
+function nearestKept(i, dir) {
+  for (let j = i + dir; j >= 0 && j < doc.rows.length; j += dir) {
+    const r = doc.rows[j];
+    if (isHeading(r)) return "";
+    if (r.accepted && cur(r)) return cur(r);
+  }
+  return "";
+}
+function buildPrompt(row, extra) {
+  const i = doc.rows.indexOf(row);
+  const outline = doc.rows.filter(r => r.text.trim()).map(r => (r === row ? "→ " : "  ") + r.text.replace(/\s*\n\s*/g, " ")).join("\n");
+  let p = `Piece: ${doc.title || "(untitled)"}\n\nOutline (→ marks the line you are drafting):\n${outline}\n`;
+  if (doc.voice.trim()) p += `\nWriter's voice notes:\n${doc.voice}\n`;
+  const prev = nearestKept(i, -1), next = nearestKept(i, 1);
+  if (prev) p += `\nFinal paragraph just before this one (continue from it, don't repeat it):\n${prev}\n`;
+  if (next) p += `\nFinal paragraph just after this one (lead into it):\n${next}\n`;
+  if (row.tossed.length) p += `\nThe writer rejected these drafts for this line. Take a clearly different approach:\n${row.tossed.map(t => "- " + t).join("\n")}\n`;
+  const bans = doc.bans.filter(b => b.trim());
+  if (bans.length) p += `\nNever use these words or patterns: ${bans.join(" | ")}\n`;
+  return p + extra + `\nWrite only the prose for the → line: one paragraph, about 60 to 140 words unless the line asks otherwise. No heading, no preamble, no quotes around it.`;
+}
+
+// ---------- generation ----------
+// ponytail: global cap of 3 concurrent CLI processes; raise if your plan's rate limits allow
+let active = 0; const waiting = [];
+const slot = () => active < 3 ? (active++, Promise.resolve()) : new Promise(r => waiting.push(r));
+const release = () => { const w = waiting.shift(); w ? w() : active--; };
+
+async function generate(row, { extra = "", replace = false, note = "" } = {}) {
+  gens.get(row.id)?.ctrl.abort();
+  const st = { ctrl: new AbortController(), text: "", note };
+  gens.set(row.id, st);
+  row.err = ""; row.genFor = row.text;
+  renderDraft(row);
+  await slot();
+  try {
+    if (st.ctrl.signal.aborted) return;
+    st.t0 = performance.now();
+    const [provider, model] = doc.model.split(":");
+    const res = await fetch("/gen", { method: "POST", signal: st.ctrl.signal,
+      body: JSON.stringify({ provider, model, system: SYSTEM, prompt: buildPrompt(row, extra) }) });
+    if (!res.ok) throw new Error(await res.text());
+    for await (const chunk of res.body.pipeThrough(new TextDecoderStream())) { st.text += chunk; renderDraft(row, true); }
+    const [text, err] = st.text.split("\0");
+    if (err) throw new Error(err);
+    if (!text.trim()) throw new Error("empty draft");
+    if (gens.get(row.id) !== st) return;
+    gens.delete(row.id);
+    if (replace && row.variants.length) row.variants[row.vi] = text.trim();
+    else { row.variants.push(text.trim()); row.variants = row.variants.slice(-8); row.vi = row.variants.length - 1; }
+    row.ms = Math.round(performance.now() - st.t0);
+    save(); renderDraft(row);
+    const found = slopFound(text);
+    if (found.length && doc.reroll && !note)
+      generate(row, { replace: true, note: "rerolling slop…",
+        extra: `\nYour previous attempt:\n${text}\nIt used banned phrases (${[...new Set(found)].join(", ")}). Rewrite it without them.\n` });
+  } catch (e) {
+    if (e.name === "AbortError" || gens.get(row.id) !== st) return;
+    gens.delete(row.id); row.err = String(e.message || e); renderDraft(row);
+  } finally { release(); }
+}
+
+function schedule(row, ms = 800) {
+  clearTimeout(timers.get(row.id));
+  timers.set(row.id, setTimeout(() => {
+    const words = row.text.trim().split(/\s+/).filter(Boolean).length;
+    if (!row.accepted && !isHeading(row) && words >= 2 && row.text !== row.genFor) generate(row);
+  }, ms));
+}
+
+// ---------- actions ----------
+function keep(row) {
+  if (!cur(row)) return;
+  row.accepted = !row.accepted; save(); renderDraft(row);
+  if (row.accepted) rowEl(row).querySelector(".draft")?.classList.add("settle");
+}
+function toss(row) {
+  const g = gens.get(row.id);
+  if (g) { g.ctrl.abort(); gens.delete(row.id); return renderDraft(row); }
+  if (!cur(row) || row.accepted) return;
+  const el = rowEl(row).querySelector(".draft");
+  el?.classList.add("toss");
+  setTimeout(() => {
+    row.tossed = [...row.tossed, cur(row)].slice(-3); // fed back so the next take goes elsewhere
+    row.variants.splice(row.vi, 1);
+    row.vi = Math.max(0, Math.min(row.vi, row.variants.length - 1));
+    row.genFor = row.text; // don't auto-regen the same skeleton you just tossed
+    save(); renderDraft(row);
+  }, 200);
+}
+function another(row) {
+  if (isHeading(row) || !row.text.trim()) return;
+  row.accepted = false;
+  const prior = row.variants.slice(-3);
+  generate(row, { extra: prior.length ? `\nTakes the writer already has (write a distinctly different one):\n${prior.map(t => "- " + t).join("\n")}\n` : "" });
+}
+function refine(row, instr) {
+  if (!cur(row)) return;
+  row.refining = false; row.accepted = false;
+  rowEl(row).querySelector("textarea").focus();
+  generate(row, { extra: `\nCurrent draft:\n${cur(row)}\n\nRevise it: ${instr}. Keep what works.\n` });
+}
+function flip(row, d) {
+  if (row.variants.length < 2 || row.accepted) return;
+  row.vi = (row.vi + d + row.variants.length) % row.variants.length; save(); renderDraft(row);
+}
+
+// ---------- render ----------
+function renderDraft(row, chunk = false) {
+  const el = rowEl(row)?.querySelector(".dr");
+  if (!el) return;
+  const g = gens.get(row.id);
+  if (chunk && g) {
+    const d = el.querySelector(".draft");
+    const [text] = g.text.split("\0");
+    if (d.classList.contains("wait")) { d.className = "draft ghost live"; }
+    d.innerHTML = hl(text);
+    return;
+  }
+  let html = "";
+  if (g) html = `<div class="draft ghost pop ${g.text ? "live" : "wait"}">${hl(g.text.split("\0")[0])}</div>
+    <div class="meta">${g.note || "drafting…"}<button data-a="toss">stop<kbd>esc</kbd></button></div>`;
+  else if (cur(row) && row.accepted) html = `<div class="draft ink" contenteditable="plaintext-only" spellcheck="true">${esc(cur(row))}</div>
+    <div class="meta">kept<button data-a="keep">unkeep<kbd>tab</kbd></button><button data-a="another">another take<kbd>⌘↵</kbd></button></div>`;
+  else if (cur(row)) {
+    const n = slopFound(cur(row)).length;
+    html = `<div class="draft ghost">${hl(cur(row))}</div><div class="meta">
+      <button data-a="keep">keep<kbd>tab</kbd></button><button data-a="toss">toss<kbd>esc</kbd></button>
+      <button data-a="another">another<kbd>⌘↵</kbd></button><button data-a="refine">refine<kbd>⌘K</kbd></button>
+      ${row.variants.length > 1 ? `<button data-a="prev">‹</button>${row.vi + 1}/${row.variants.length}<button data-a="next">›</button>` : ""}
+      <span class="sp"></span>${n ? `<span class="slopn">${n} slop</span>` : ""}${row.ms ? `<span>${(row.ms / 1000).toFixed(1)}s</span>` : ""}</div>`;
+  }
+  else if (row.tossed.length && !row.accepted) html = `<div class="meta">tossed<button data-a="another">another take<kbd>⌘↵</kbd></button></div>`;
+  if (row.err) html += `<div class="meta err">${esc(row.err)} <button data-a="another">retry</button></div>`;
+  if (row.refining) html += `<div class="refine"><input placeholder="how should it change? ↵" aria-label="Refine instruction">
+    ${CHIPS.map(c => `<button data-chip="${c}">${c}</button>`).join("")}</div>`;
+  el.innerHTML = html;
+  if (row.refining) el.querySelector(".refine input").focus();
+}
+
+function render(focusId, caret) {
+  $("#rows").innerHTML = doc.rows.map(r => `<div class="row${isHeading(r) ? " heading" : ""}" data-id="${r.id}">
+    <div class="sk"><textarea rows="1" spellcheck="false" placeholder="${doc.rows.length === 1 ? "Jot a skeleton line… “open on the night the servers died; I was at a wedding”" : ""}"
+      aria-label="Outline line">${esc(r.text)}</textarea></div><div class="dr"></div></div>`).join("");
+  doc.rows.forEach(r => renderDraft(r));
+  if (focusId) {
+    const ta = document.querySelector(`.row[data-id="${focusId}"] textarea`);
+    ta.focus(); const p = caret ?? ta.value.length; ta.setSelectionRange(p, p);
+  }
+}
+const rowOf = el => doc.rows.find(r => r.id === el.closest(".row")?.dataset.id);
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 1400); }
+
+// ---------- events ----------
+$("#rows").addEventListener("input", e => {
+  const row = rowOf(e.target);
+  if (e.target.tagName === "TEXTAREA") {
+    row.text = e.target.value;
+    rowEl(row).classList.toggle("heading", isHeading(row));
+    save(); schedule(row);
+  } else if (e.target.classList.contains("ink")) { row.variants[row.vi] = e.target.innerText; save(); }
+});
+
+$("#rows").addEventListener("keydown", e => {
+  const row = rowOf(e.target); if (!row) return;
+  const mod = e.metaKey || e.ctrlKey, i = doc.rows.indexOf(row);
+  if (e.target.matches(".refine input")) {
+    if (e.key === "Enter" && e.target.value.trim()) { e.preventDefault(); refine(row, e.target.value.trim()); }
+    if (e.key === "Escape") { row.refining = false; renderDraft(row); rowEl(row).querySelector("textarea").focus(); }
+    return;
+  }
+  if (e.target.classList.contains("ink")) {
+    if (e.key === "Escape") rowEl(row).querySelector("textarea").focus();
+    return;
+  }
+  if (e.target.tagName !== "TEXTAREA") return;
+  const ta = e.target;
+  if (e.key === "Enter" && mod) { e.preventDefault(); another(row); }
+  else if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    const tail = ta.value.slice(ta.selectionEnd);
+    row.text = ta.value.slice(0, ta.selectionStart);
+    const r = newRow(tail); doc.rows.splice(i + 1, 0, r);
+    save(); render(r.id, 0); schedule(row, 0);
+  }
+  else if (e.key === "Tab") { e.preventDefault(); keep(row); }
+  else if (e.key === "Escape") { e.preventDefault(); toss(row); }
+  else if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); if (cur(row)) { row.refining = true; renderDraft(row); } }
+  else if (e.altKey && (e.code === "Comma" || e.code === "Period")) { e.preventDefault(); flip(row, e.code === "Comma" ? -1 : 1); }
+  else if (e.key === "Backspace" && !ta.value && doc.rows.length > 1) {
+    e.preventDefault(); gens.get(row.id)?.ctrl.abort(); gens.delete(row.id);
+    doc.rows.splice(i, 1); save(); render(doc.rows[Math.max(0, i - 1)].id);
+  }
+  else if (e.key === "ArrowUp" && ta.selectionStart === 0 && i > 0) { e.preventDefault(); render(doc.rows[i - 1].id); }
+  else if (e.key === "ArrowDown" && ta.selectionEnd === ta.value.length && i < doc.rows.length - 1) { e.preventDefault(); render(doc.rows[i + 1].id, 0); }
+});
+
+// Pasting a multi-line outline splits it into rows and drafts them all.
+$("#rows").addEventListener("paste", e => {
+  if (e.target.tagName !== "TEXTAREA") return;
+  const lines = e.clipboardData.getData("text").split(/\r?\n/).map(l => l.replace(/^\s*[-*•]\s+/, "").trimEnd()).filter(l => l.trim());
+  if (lines.length < 2) return;
+  e.preventDefault();
+  const row = rowOf(e.target), i = doc.rows.indexOf(row);
+  const ta = e.target, before = ta.value.slice(0, ta.selectionStart), after = ta.value.slice(ta.selectionEnd);
+  row.text = before + lines[0];
+  const added = lines.slice(1).map(l => newRow(l));
+  added[added.length - 1].text += after;
+  doc.rows.splice(i + 1, 0, ...added);
+  save(); render(added[added.length - 1].id);
+  [row, ...added].forEach(r => schedule(r, 0));
+});
+
+$("#rows").addEventListener("click", e => {
+  const row = rowOf(e.target); if (!row) return;
+  const a = e.target.closest("[data-a]")?.dataset.a, chip = e.target.dataset.chip;
+  if (chip) return refine(row, chip);
+  if (a === "keep") keep(row); else if (a === "toss") toss(row); else if (a === "another") another(row);
+  else if (a === "refine") { row.refining = true; renderDraft(row); }
+  else if (a === "prev" || a === "next") flip(row, a === "prev" ? -1 : 1);
+  else if (e.target.closest(".draft.ghost") && getSelection().isCollapsed) rowEl(row).querySelector("textarea").focus();
+});
+
+// Select any text in a draft → one click bans it everywhere.
+const banBtn = $("#ban");
+document.addEventListener("mouseup", () => setTimeout(() => {
+  const s = getSelection(), t = s.toString().trim();
+  if (!t || t.length > 60 || !s.anchorNode?.parentElement?.closest(".dr")) return (banBtn.style.display = "none");
+  const r = s.getRangeAt(0).getBoundingClientRect();
+  Object.assign(banBtn.style, { display: "block", left: `${r.left + scrollX}px`, top: `${r.bottom + scrollY + 6}px` });
+  banBtn.textContent = `Ban “${t.length > 24 ? t.slice(0, 24) + "…" : t}”`; banBtn.dataset.t = t;
+}));
+banBtn.addEventListener("mousedown", e => e.preventDefault());
+banBtn.addEventListener("click", () => {
+  doc.bans.push(banBtn.dataset.t); $("#bans").value = doc.bans.join("\n");
+  banBtn.style.display = "none"; getSelection().removeAllRanges();
+  save(); doc.rows.forEach(r => renderDraft(r)); toast("Banned. Future drafts avoid it.");
+});
+
+$("#title").oninput = e => { doc.title = e.target.value; save(); };
+$("#model").onchange = e => { doc.model = e.target.value; save(); };
+$("#voice").oninput = e => { doc.voice = e.target.value; save(); };
+$("#bans").oninput = e => { doc.bans = e.target.value.split("\n"); save(); doc.rows.forEach(r => gens.has(r.id) || renderDraft(r)); };
+$("#reroll").onchange = e => { doc.reroll = e.target.checked; save(); };
+$("#settings").onclick = e => { const o = $("#drawer").classList.toggle("open"); e.target.setAttribute("aria-expanded", o); };
+$("#all").onclick = () => doc.rows.filter(r => !r.variants.length && !gens.has(r.id) && !isHeading(r) && r.text.trim()).forEach(r => generate(r));
+$("#copy").onclick = async () => {
+  const parts = doc.rows.filter(r => isHeading(r) || (r.accepted && cur(r))).map(r => isHeading(r) ? r.text.trim() : cur(r).trim());
+  const md = (doc.title ? `# ${doc.title}\n\n` : "") + parts.join("\n\n");
+  await navigator.clipboard.writeText(md);
+  toast(`Copied ${doc.rows.filter(r => r.accepted).length} kept paragraphs`);
+};
+
+(async () => {
+  doc = await (await fetch("/doc")).json();
+  doc = Object.assign({ title: "", voice: "", bans: DEFAULT_BANS, model: "claude:haiku", reroll: true, rows: [newRow()] }, doc ?? {});
+  $("#title").value = doc.title; $("#model").value = doc.model; $("#voice").value = doc.voice;
+  $("#bans").value = doc.bans.join("\n"); $("#reroll").checked = doc.reroll;
+  render(doc.rows[0].id);
+})();
+</script>
+</body>
+</html>
