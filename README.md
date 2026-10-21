@@ -2,7 +2,9 @@
 
 A writing canvas where you jot a skeleton and drafts grow beside it. It runs locally and drafts with **your own Claude or ChatGPT plan** through the `claude` and `codex` CLIs: no API keys, no per-token bill.
 
-![Sprout: outline on the left, drafts on the right](docs/screenshot.png)
+![Sprout demo: typing an outline, drafts streaming in beside it, a link preview, keeping and refining drafts, copying as Slack](docs/demo.gif)
+
+<sub>30 seconds, real time apart from two pauses trimmed while drafts finished. [Full-quality MP4](docs/demo.mp4).</sub>
 
 ## What it does
 
