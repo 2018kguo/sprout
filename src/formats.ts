@@ -3,7 +3,7 @@ export type Block = { kind: "h"; level: number; text: string } | { kind: "p"; te
 export type Piece = { title: string; blocks: Block[] };
 
 type Inline = { b: (s: string) => string; i: (s: string) => string; code: (s: string) => string; link: (text: string, url: string) => string };
-// ponytail: regex inline markdown (bold, italic, code, links); nested/escaped markup isn't handled
+// Note: regex inline markdown (bold, italic, code, links); nested/escaped markup isn't handled
 function inline(t: string, f: Inline) {
   return t
     .replace(/`([^`]+)`/g, (_, c) => f.code(c))
@@ -42,7 +42,7 @@ export function html(p: Piece) {
 }
 
 // X/Twitter thread: packs paragraphs into posts ≤ max chars, splitting long ones at sentences, then words.
-// ponytail: counts JS chars; X weighs URLs as 23 and CJK as 2, so URL/CJK-heavy posts can run slightly over
+// Note: counts JS chars; X weighs URLs as 23 and CJK as 2, so URL/CJK-heavy posts can run slightly over
 export function thread(p: Piece, max = 280) {
   const room = max - 8; // leave space for " 12/34"
   const units = [p.title, ...p.blocks.map(b => plain(b.text))].filter(Boolean).flatMap(u => split(u, room));

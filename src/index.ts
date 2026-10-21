@@ -42,7 +42,7 @@ function postBody(b: any) {
 
 function argv(provider: string, model: string, system: string) {
   if (provider === "codex")
-    // ponytail: codex has no token streaming in exec --json; the whole answer lands at once
+    // Note: codex has no token streaming in exec --json; the whole answer lands at once
     return ["codex", "exec", "-", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
       "-c", "model_reasoning_effort=low", "-c", "mcp_servers={}", ...(model ? ["-m", model] : [])];
   // Haiku thinks before every draft (~650-950 hidden output tokens for a 50-word paragraph). Nothing in the CLI turns
@@ -105,7 +105,7 @@ function generate(req: Request, body: { provider: string; model: string; system:
 }
 
 // ---------- connections: is each CLI installed and logged in? ----------
-// ponytail: we only read the CLIs' own status; login stays in the CLI (it opens a browser flow).
+// Note: we only read the CLIs' own status; login stays in the CLI (it opens a browser flow).
 export type Conn = {
   provider: "claude" | "codex"; installed: boolean; loggedIn: boolean; version?: string;
   method?: string; plan?: boolean; account?: string; fix?: string;

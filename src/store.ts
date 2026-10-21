@@ -190,7 +190,7 @@ Output nothing outside the @@ blocks.`;
 }
 
 // ---------- generation ----------
-// ponytail: global cap of 3 concurrent CLI processes; raise if your plan's rate limits allow
+// Note: global cap of 3 concurrent CLI processes; raise if your plan's rate limits allow
 let active = 0; const waiting: (() => void)[] = [];
 const slot = () => active < 3 ? (active++, Promise.resolve()) : new Promise<void>(r => waiting.push(r));
 const release = () => { const w = waiting.shift(); w ? w() : active--; };

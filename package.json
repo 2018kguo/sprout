@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "NODE_ENV=production bun src/index.ts",
-    "build": "bun run build.ts"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.7",
@@ -33,5 +34,7 @@
   },
   "peerDependencies": {
     "typescript": "^7"
-  }
+  },
+  "description": "A local writing canvas: jot a skeleton, drafts grow beside it, using your own Claude or ChatGPT plan via their CLIs.",
+  "license": "MIT"
 }
