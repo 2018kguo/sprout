@@ -3,7 +3,9 @@ export type Row = {
   id: string; text: string; variants: string[]; vi: number; accepted: boolean; tossed: string[];
   genFor?: string; skip?: string; skipFor?: string; err?: string; ms?: number; refining?: boolean; tossing?: boolean; keptAt?: number;
 };
-export type Doc = { title: string; voice: string; bans: string[]; model: string; reroll: boolean; rows: Row[] };
+export type Doc = { title: string; rows: Row[] };
+export type Settings = { voice: string; bans: string[]; model: string; reroll: boolean };
+export type PostSummary = { id: string; title: string; updated_at: number; first: string | null };
 export type Gen = { ctrl: AbortController; text: string; note: string; key: number; t0?: number };
 
 export const DEFAULT_BANS = ["—", "delve", "tapestry", "testament to", "in today's", "fast-paced", "ever-evolving", "navigate the",
@@ -21,6 +23,9 @@ const LENGTH_RULE = "Length follows substance: expand only what the writer gave 
 
 export const store = {
   doc: null as Doc | null,
+  postId: "",
+  posts: [] as PostSummary[],
+  settings: null as Settings | null,
   gens: new Map<string, Gen>(),
   status: "",
   saved: "" as "" | "saving" | "saved" | "error",
@@ -34,35 +39,82 @@ export const getVersion = () => store.version;
 export function emit() { store.version++; listeners.forEach(l => l()); }
 
 const d = () => store.doc!;
+const S = () => store.settings!;
 export const newRow = (text = ""): Row => ({ id: crypto.randomUUID(), text, variants: [], vi: 0, accepted: false, tossed: [] });
 export const isHeading = (r: Row) => r.text.trimStart().startsWith("#");
 export const cur = (r: Row) => r.variants[r.vi];
 let genKey = 0;
 
 // ---------- persistence ----------
-let saveT: ReturnType<typeof setTimeout>;
+// Each save captures its post id + doc at call time, so a debounced write can't land on another post.
+let saveT: ReturnType<typeof setTimeout>, pending: null | { id: string; run: () => Promise<void> } = null;
 export function save() {
   clearTimeout(saveT);
   store.saved = "saving";
-  saveT = setTimeout(async () => {
+  const id = store.postId, doc = d(), settings = S();
+  const run = async () => {
+    if (pending?.run === run) pending = null;
     try {
-      const res = await fetch("/doc", { method: "PUT", body: JSON.stringify(d()) });
-      if (!res.ok) throw new Error(await res.text());
-      store.saved = "saved";
-    } catch (e) { store.saved = "error"; store.saveErr = String(e); }
-    emit();
-  }, 400);
+      const res = await Promise.all([
+        fetch(`/api/posts/${id}`, { method: "PUT", body: JSON.stringify(doc) }),
+        fetch("/api/settings", { method: "PUT", body: JSON.stringify(settings) }),
+      ]);
+      for (const r of res) if (!r.ok) throw new Error(await r.text());
+      if (id === store.postId) store.saved = "saved";
+      await refreshPosts();
+    } catch (e) { store.saved = "error"; store.saveErr = String(e); emit(); }
+  };
+  pending = { id, run };
+  saveT = setTimeout(run, 400);
+}
+async function flush() { clearTimeout(saveT); await pending?.run(); }
+
+export async function refreshPosts() {
+  store.posts = await (await fetch("/api/posts")).json();
+  emit();
 }
 export async function load() {
-  const saved = await (await fetch("/doc")).json();
-  store.doc = { title: "", voice: "", bans: DEFAULT_BANS, model: "claude:haiku", reroll: true, rows: [newRow()], ...(saved ?? {}) };
-  store.focus = { id: d().rows[0]!.id };
+  const [settings] = await Promise.all([fetch("/api/settings").then(r => r.json()), refreshPosts()]);
+  store.settings = { voice: "", bans: DEFAULT_BANS, model: "claude:haiku", reroll: true, ...(settings ?? {}) };
+  const want = location.hash.slice(1);
+  if (store.posts.some(p => p.id === want)) await openPost(want);
+  else if (store.posts[0]) await openPost(store.posts[0].id);
+  else await newPost();
+  addEventListener("hashchange", () => { const id = location.hash.slice(1); if (id && id !== store.postId) openPost(id); });
+}
+export async function openPost(id: string) {
+  await flush();
+  for (const g of store.gens.values()) g.ctrl.abort(); // drafts in flight belong to the old post
+  store.gens.clear();
+  const res = await fetch(`/api/posts/${id}`);
+  if (!res.ok) return refreshPosts();
+  const p = await res.json();
+  store.postId = id;
+  store.doc = { title: p.title, rows: p.rows.length ? p.rows : [newRow()] };
+  store.saved = "";
+  store.focus = { id: store.doc.rows.at(-1)!.id };
+  if (location.hash.slice(1) !== id) location.hash = id;
   emit();
+}
+export async function newPost() {
+  await flush();
+  const p = await (await fetch("/api/posts", { method: "POST" })).json();
+  await refreshPosts();
+  await openPost(p.id);
+}
+export async function deletePost(id: string) {
+  if (pending?.id === id) { clearTimeout(saveT); pending = null; }
+  const res = await fetch(`/api/posts/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+  await refreshPosts();
+  if (id !== store.postId) return;
+  store.postId = "";
+  await (store.posts[0] ? openPost(store.posts[0].id) : newPost());
 }
 
 // ---------- slop ----------
 function banRes() {
-  return d().bans.map(b => b.trim()).filter(Boolean).flatMap(b => {
+  return S().bans.map(b => b.trim()).filter(Boolean).flatMap(b => {
     const m = b.match(/^\/(.+)\/$/);
     try { return [new RegExp(m ? m[1]! : b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")]; } catch { return []; }
   });
@@ -87,14 +139,14 @@ function nearestKept(i: number, dir: number) {
   return "";
 }
 const bansLine = () => {
-  const bans = d().bans.filter(b => b.trim());
+  const bans = S().bans.filter(b => b.trim());
   return bans.length ? `\nNever use these words or patterns: ${bans.join(" | ")}\n` : "";
 };
 function buildPrompt(row: Row, extra: string) {
   const doc = d(), i = doc.rows.indexOf(row);
   const outline = doc.rows.filter(r => r.text.trim()).map(r => (r === row ? "→ " : "  ") + r.text.replace(/\s*\n\s*/g, " ")).join("\n");
   let p = `Piece: ${doc.title || "(untitled)"}\n\nOutline (→ marks the line you are drafting):\n${outline}\n`;
-  if (doc.voice.trim()) p += `\nWriter's voice notes:\n${doc.voice}\n`;
+  if (S().voice.trim()) p += `\nWriter's voice notes:\n${S().voice}\n`;
   const prev = nearestKept(i, -1), next = nearestKept(i, 1);
   if (prev) p += `\nFinal paragraph just before this one (continue from it, don't repeat it):\n${prev}\n`;
   if (next) p += `\nFinal paragraph just after this one (lead into it):\n${next}\n`;
@@ -108,7 +160,7 @@ function buildPassPrompt(nums: number[]) {
   p += doc.rows.map((r, i) => r.text.trim() ? `${i + 1}. ${r.text.replace(/\s*\n\s*/g, " ")}` : "").filter(Boolean).join("\n") + "\n";
   const kept = doc.rows.map((r, i) => r.accepted && cur(r) ? `[${i + 1}] ${cur(r)}` : "").filter(Boolean);
   if (kept.length) p += `\nParagraphs the writer already kept:\n${kept.join("\n\n")}\n`;
-  if (doc.voice.trim()) p += `\nWriter's voice notes:\n${doc.voice}\n`;
+  if (S().voice.trim()) p += `\nWriter's voice notes:\n${S().voice}\n`;
   return p + bansLine() + `
 Lines to handle now: ${nums.join(", ")}
 
@@ -127,7 +179,7 @@ const slot = () => active < 3 ? (active++, Promise.resolve()) : new Promise<void
 const release = () => { const w = waiting.shift(); w ? w() : active--; };
 
 async function stream(prompt: string, signal: AbortSignal, onText: (t: string) => void) {
-  const [provider, model] = d().model.split(":");
+  const [provider, model] = S().model.split(":");
   const res = await fetch("/gen", { method: "POST", signal, body: JSON.stringify({ provider, model, system: SYSTEM, prompt }) });
   if (!res.ok) throw new Error(await res.text());
   let all = "";
@@ -159,7 +211,7 @@ export async function generate(row: Row, { extra = "", replace = false, note = "
     else pushVariant(row, text, st.t0);
     save(); emit();
     const found = slopFound(text);
-    if (found.length && d().reroll && !note)
+    if (found.length && S().reroll && !note)
       generate(row, { replace: true, note: "rerolling slop…",
         extra: `\nYour previous attempt:\n${text}\nIt used banned phrases (${[...new Set(found)].join(", ")}). Rewrite it without them.\n` });
   } catch (e: any) {
@@ -287,7 +339,8 @@ export function draftAll() {
 }
 export function editKept(row: Row, text: string) { row.variants[row.vi] = text; save(); }
 export function setDoc(patch: Partial<Doc>) { Object.assign(d(), patch); save(); emit(); }
-export function ban(phrase: string) { if (!d().bans.includes(phrase)) setDoc({ bans: [...d().bans, phrase] }); }
+export function setSettings(patch: Partial<Settings>) { Object.assign(S(), patch); save(); emit(); }
+export function ban(phrase: string) { if (!S().bans.includes(phrase)) setSettings({ bans: [...S().bans, phrase] }); }
 export function toMarkdown() {
   const doc = d();
   const parts = doc.rows.filter(r => isHeading(r) || (r.accepted && cur(r))).map(r => isHeading(r) ? r.text.trim() : cur(r)!.trim());

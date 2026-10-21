@@ -1,5 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Check, ChevronLeft, ChevronRight, Copy, RotateCcw, Settings2, Sparkles, Wand2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, MoreHorizontal, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInput, SidebarInset,
+  SidebarMenu, SidebarMenuAction, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
+} from "@/components/ui/sidebar";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,9 +23,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
-  CHIPS, DEFAULT_BANS, MODELS, another, ban, cur, deleteRow, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
-  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setText, slopFound, splitRow, store, subscribe, toMarkdown, toss,
-  type Row,
+  CHIPS, DEFAULT_BANS, MODELS, another, ban, cur, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
+  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, slopFound, splitRow, store, subscribe, toMarkdown, toss,
+  type PostSummary, type Row,
 } from "./store";
 import "./index.css";
 
@@ -42,16 +51,20 @@ export function App() {
   if (!doc) return null;
 
   return (
-    <div className="min-h-screen">
+    <SidebarProvider>
+      <PostsSidebar />
+      <SidebarInset className="min-w-0">
       <header className="sticky top-0 z-10 border-b bg-background/85 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 px-4 py-2.5">
+          <SidebarTrigger className="-ml-1" />
+          <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
           <input
             value={doc.title} onChange={e => setDoc({ title: e.target.value })} placeholder="Untitled piece" aria-label="Title"
             className="min-w-0 flex-1 basis-60 bg-transparent text-xl font-semibold tracking-tight outline-none placeholder:text-muted-foreground/60"
           />
           <span className="text-xs text-primary">{store.status}</span>
           <SaveState />
-          <Select value={doc.model} onValueChange={model => setDoc({ model })}>
+          <Select value={store.settings!.model} onValueChange={model => setSettings({ model })}>
             <SelectTrigger size="sm" className="w-auto" aria-label="Model"><SelectValue /></SelectTrigger>
             <SelectContent>
               {MODELS.map(m => (
@@ -71,18 +84,19 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 pt-5 pb-32">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pt-5 pb-16">
         {doc.rows.map(r => <RowView key={r.id} row={r} only={doc.rows.length === 1} />)}
       </main>
 
-      <BanButton />
-      <footer className="fixed inset-x-0 bottom-0 hidden border-t bg-background/85 py-2 text-center text-xs text-muted-foreground backdrop-blur md:block">
+      <footer className="sticky bottom-0 hidden border-t bg-background/85 py-2 text-center text-xs text-muted-foreground backdrop-blur md:block">
         <Hint k="↵">new line</Hint><Hint k="Tab">keep</Hint><Hint k="Esc">toss</Hint><Hint k="⌘↵">another take</Hint>
         <Hint k="⌘K">refine</Hint><Hint k="⌥ , ⌥ .">flip takes</Hint><Hint k="#">heading</Hint>
         <span>select draft text to ban it</span>
       </footer>
+      </SidebarInset>
+      <BanButton />
       <Toaster position="bottom-center" />
-    </div>
+    </SidebarProvider>
   );
 }
 
@@ -287,9 +301,9 @@ function BanButton() {
 
 // ---------- settings ----------
 function SettingsSheet() {
-  const doc = store.doc!;
+  const settings = store.settings!;
   const [phrase, setPhrase] = useState("");
-  const bans = doc.bans.filter(b => b.trim());
+  const bans = settings.bans.filter(b => b.trim());
   const add = () => { if (phrase.trim()) { ban(phrase.trim()); setPhrase(""); } };
   return (
     <Sheet>
@@ -304,7 +318,7 @@ function SettingsSheet() {
         <div className="flex flex-col gap-6 px-4 pb-8">
           <section className="grid gap-2">
             <Label htmlFor="voice">Your voice</Label>
-            <Textarea id="voice" rows={6} value={doc.voice} onChange={e => setDoc({ voice: e.target.value })}
+            <Textarea id="voice" rows={6} value={settings.voice} onChange={e => setSettings({ voice: e.target.value })}
               placeholder="Short sentences. Dry humor. Audience: engineers who've been burned before. Paste a paragraph you like." />
             <p className="text-xs text-muted-foreground">How you write and who it's for. A sample paragraph works best.</p>
           </section>
@@ -312,7 +326,7 @@ function SettingsSheet() {
           <section className="grid gap-3">
             <div className="flex items-baseline justify-between">
               <Label htmlFor="ban">Banned phrases <span className="font-normal text-muted-foreground">({bans.length})</span></Label>
-              <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setDoc({ bans: DEFAULT_BANS })}>
+              <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setSettings({ bans: DEFAULT_BANS })}>
                 Reset to defaults
               </Button>
             </div>
@@ -325,7 +339,7 @@ function SettingsSheet() {
               {bans.map(b => (
                 <Badge key={b} variant="secondary" className="gap-1 pr-1 font-normal">
                   <span className={cn(b.startsWith("/") && "font-mono text-[11px]")}>{b}</span>
-                  <button aria-label={`Unban ${b}`} onClick={() => setDoc({ bans: doc.bans.filter(x => x !== b) })}
+                  <button aria-label={`Unban ${b}`} onClick={() => setSettings({ bans: settings.bans.filter(x => x !== b) })}
                     className="rounded-sm p-0.5 opacity-60 hover:bg-background hover:opacity-100">
                     <X className="size-3" />
                   </button>
@@ -340,10 +354,80 @@ function SettingsSheet() {
               <Label htmlFor="reroll">Auto-reroll slop</Label>
               <p className="text-xs text-muted-foreground">If a draft uses a banned phrase, rewrite it once automatically.</p>
             </div>
-            <Switch id="reroll" checked={doc.reroll} onCheckedChange={reroll => setDoc({ reroll })} />
+            <Switch id="reroll" checked={settings.reroll} onCheckedChange={reroll => setSettings({ reroll })} />
           </section>
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+// ---------- posts ----------
+const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+const UNITS = [["year", 31536e3], ["month", 2592e3], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]] as const;
+function ago(t: number) {
+  const s = (t - Date.now()) / 1000;
+  for (const [unit, n] of UNITS) if (Math.abs(s) >= n) return rtf.format(Math.round(s / n), unit);
+  return "just now";
+}
+const postLabel = (p: PostSummary) =>
+  (p.id === store.postId ? store.doc?.title : p.title)?.trim() || p.first?.trim() || "Untitled";
+
+function PostsSidebar() {
+  const [q, setQ] = useState("");
+  const [del, setDel] = useState<PostSummary | null>(null);
+  const { isMobile, setOpenMobile } = useSidebar();
+  const go = (fn: () => Promise<unknown>) => { if (isMobile) setOpenMobile(false); fn().catch(e => toast.error(String(e))); };
+  const posts = store.posts.filter(p => postLabel(p).toLowerCase().includes(q.trim().toLowerCase()));
+  return (
+    <Sidebar>
+      <SidebarHeader>
+        <div className="flex items-center justify-between pl-2">
+          <span className="font-semibold tracking-tight">Sprout</span>
+          <Button variant="ghost" size="icon-sm" onClick={() => go(newPost)} aria-label="New post" title="New post"><SquarePen /></Button>
+        </div>
+        <SidebarInput placeholder="Search posts" value={q} onChange={e => setQ(e.target.value)} aria-label="Search posts" />
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Posts</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {posts.map(p => (
+                <SidebarMenuItem key={p.id}>
+                  <SidebarMenuButton isActive={p.id === store.postId} onClick={() => go(() => openPost(p.id))}
+                    className="h-auto flex-col items-start gap-0.5 py-2">
+                    <span className="w-full truncate">{postLabel(p)}</span>
+                    <span className="text-xs text-muted-foreground">{ago(p.updated_at)}</span>
+                  </SidebarMenuButton>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <SidebarMenuAction showOnHover aria-label="Post actions"><MoreHorizontal /></SidebarMenuAction>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="start">
+                      <DropdownMenuItem variant="destructive" onSelect={() => setDel(p)}><Trash2 /> Delete</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </SidebarMenuItem>
+              ))}
+              {!posts.length && <p className="px-2 py-1 text-xs text-muted-foreground">No posts match.</p>}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <AlertDialog open={!!del} onOpenChange={o => { if (!o) setDel(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{del && postLabel(del)}”?</AlertDialogTitle>
+            <AlertDialogDescription>This removes the outline and every draft in it. It can't be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive"
+              onClick={() => { const id = del!.id; go(() => deletePost(id)); }}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Sidebar>
   );
 }
