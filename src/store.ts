@@ -1,4 +1,5 @@
 import type { Conn } from "./index";
+import type { Block, Piece } from "./formats";
 export type { Conn };
 
 // All drafting state and logic. Mutable store + version counter; React reads it via useSyncExternalStore.
@@ -147,45 +148,44 @@ export function marks(t: string): Mark[] {
 export const slopFound = (t: string) => marks(t).filter(m => m[2] === "slop").map(m => m[3]);
 
 // ---------- prompts ----------
-function nearestKept(i: number, dir: number) {
-  for (let j = i + dir; j >= 0 && j < d().rows.length; j += dir) {
-    const r = d().rows[j]!;
-    if (isHeading(r)) return "";
-    if (r.accepted && cur(r)) return cur(r)!;
-  }
-  return "";
-}
-const bansLine = () => {
+// Prompt caching: the claude CLI caches the system prompt as a prefix (measured: 2nd call read 97% from cache)
+// but caches nothing in the user message. So everything stable lives in the system prompt, least- to
+// most-volatile (rules → voice → bans → kept paragraphs), and only the small, per-keystroke parts (outline +
+// task) go in the user message. Kept paragraphs are tagged by row id, not line number, so inserting a line
+// doesn't change the cached prefix. Codex gets the same order (system first), which suits OpenAI prefix caching.
+const keptTag = (r: Row) => `#${r.id.slice(0, 6)}`;
+function systemPrompt() {
+  let p = `${SYSTEM}\n${LENGTH_RULE}`;
+  if (S().voice.trim()) p += `\n\nWriter's voice notes:\n${S().voice}`;
   const bans = S().bans.filter(b => b.trim());
-  return bans.length ? `\nNever use these words or patterns: ${bans.join(" | ")}\n` : "";
-};
+  if (bans.length) p += `\n\nNever use these words or patterns: ${bans.join(" | ")}`;
+  const kept = d().rows.filter(r => r.accepted && cur(r)).map(r => `[${keptTag(r)}] ${cur(r)}`);
+  if (kept.length) p += `\n\nFinal paragraphs the writer has already kept (the outline marks them "kept #id"):\n${kept.join("\n\n")}`;
+  return p;
+}
+function outline(marked?: Row) {
+  return d().rows.map((r, i) => {
+    if (!r.text.trim()) return "";
+    const line = `${r === marked ? "→ " : ""}${i + 1}. ${r.text.replace(/\s*\n\s*/g, " ")}`;
+    return r.accepted && cur(r) ? `${line}  (kept ${keptTag(r)})` : line;
+  }).filter(Boolean).join("\n");
+}
+const pieceHeader = () => `Piece: ${d().title || "(untitled)"}\n\nOutline (numbered; indentation means nesting):\n`;
 function buildPrompt(row: Row, extra: string) {
-  const doc = d(), i = doc.rows.indexOf(row);
-  const outline = doc.rows.filter(r => r.text.trim()).map(r => (r === row ? "→ " : "  ") + r.text.replace(/\s*\n\s*/g, " ")).join("\n");
-  let p = `Piece: ${doc.title || "(untitled)"}\n\nOutline (→ marks the line you are drafting):\n${outline}\n`;
-  if (S().voice.trim()) p += `\nWriter's voice notes:\n${S().voice}\n`;
-  const prev = nearestKept(i, -1), next = nearestKept(i, 1);
-  if (prev) p += `\nFinal paragraph just before this one (continue from it, don't repeat it):\n${prev}\n`;
-  if (next) p += `\nFinal paragraph just after this one (lead into it):\n${next}\n`;
+  let p = pieceHeader() + outline(row) + "\n";
   if (row.tossed.length) p += `\nThe writer rejected these drafts for this line. Take a clearly different approach:\n${row.tossed.map(t => "- " + t).join("\n")}\n`;
-  return p + bansLine() + extra + `\nWrite only the prose for the → line. ${LENGTH_RULE} No heading, no preamble, no quotes around it.`;
+  return p + extra + `\nWrite only the prose for the → line, continuing from any kept paragraph before it and leading into any after it. No heading, no preamble, no quotes around it.`;
 }
 // One request reads the whole outline and drafts (or skips) every line that needs it.
 function buildPassPrompt(nums: number[]) {
-  const doc = d();
-  let p = `Piece: ${doc.title || "(untitled)"}\n\nOutline (numbered; indentation means nesting):\n`;
-  p += doc.rows.map((r, i) => r.text.trim() ? `${i + 1}. ${r.text.replace(/\s*\n\s*/g, " ")}` : "").filter(Boolean).join("\n") + "\n";
-  const kept = doc.rows.map((r, i) => r.accepted && cur(r) ? `[${i + 1}] ${cur(r)}` : "").filter(Boolean);
-  if (kept.length) p += `\nParagraphs the writer already kept:\n${kept.join("\n\n")}\n`;
-  if (S().voice.trim()) p += `\nWriter's voice notes:\n${S().voice}\n`;
-  return p + bansLine() + `
+  return pieceHeader() + outline() + `
+
 Lines to handle now: ${nums.join(", ")}
 
 Read the whole outline first. The paragraphs must read as one piece: each covers only its own line, picks up from the one before, and never repeats a neighbor.
 For each line to handle, output "@@<line number>" on its own line, then EITHER the prose for that line OR "SKIP: <a few words to the writer>".
 SKIP when the line is a title, thesis or section label that the lines under it develop ("SKIP: the lines below cover this").
 SKIP when writing more than a restatement would mean inventing things; say what's missing ("SKIP: what went wrong? give me the story").
-${LENGTH_RULE}
 Output nothing outside the @@ blocks.`;
 }
 
@@ -197,8 +197,8 @@ const release = () => { const w = waiting.shift(); w ? w() : active--; };
 
 async function stream(prompt: string, signal: AbortSignal, onText: (t: string) => void) {
   const [provider, model] = S().model.split(":");
-  const res = await fetch("/gen", { method: "POST", signal, body: JSON.stringify({ provider, model, system: SYSTEM, prompt }) });
-  if (!res.ok) throw new Error(await res.text());
+  const res = await fetch("/api/gen", { method: "POST", signal, body: JSON.stringify({ provider, model, system: systemPrompt(), prompt }) });
+  if (!res.ok) throw new Error((await res.text()) || `draft request failed (HTTP ${res.status})`);
   let all = "";
   for await (const chunk of res.body!.pipeThrough(new TextDecoderStream())) { all += chunk; onText(all.split("\0")[0]!); }
   const [text, err] = all.split("\0");
@@ -244,7 +244,10 @@ export function schedulePass() {
   passTimers.forEach(clearTimeout);
   passTimers = [setTimeout(() => pass(false), 1200), setTimeout(() => pass(true), 4000)];
 }
-const needsDraft = (r: Row) => !isHeading(r) && !!r.text.trim() && !r.accepted && !store.gens.has(r.id) && r.text !== r.genFor;
+// Whitespace-only edits and contentless lines ("-") never cost a model call.
+export const same = (a = "", b = "") => a.trim().replace(/\s+/g, " ") === b.trim().replace(/\s+/g, " ");
+const hasWords = (t: string) => /[\p{L}\p{N}]{2,}/u.test(t);
+const needsDraft = (r: Row) => !isHeading(r) && hasWords(r.text) && !r.accepted && !store.gens.has(r.id) && !same(r.text, r.genFor);
 const focusedRowId = () => document.activeElement?.closest<HTMLElement>("[data-row]")?.dataset.row;
 
 export async function pass(includeFocused: boolean) {
@@ -262,7 +265,7 @@ export async function pass(includeFocused: boolean) {
     for (const [, n, body] of all.matchAll(/^@@(\d+)[^\n]*\n([\s\S]*?)(?=^@@\d|$(?![\s\S]))/gm)) {
       const s = sent.get(Number(n)); if (!s) continue;
       const { row } = s, t = body!.trim();
-      if (row.text !== s.text || (s.st && store.gens.get(row.id) !== s.st)) continue; // edited or tossed mid-pass
+      if (!same(row.text, s.text) || (s.st && store.gens.get(row.id) !== s.st)) continue; // edited or tossed mid-pass
       if (!done && /^S(K(I(P)?)?)?$/.test(t)) continue; // might become SKIP: don't flash it
       if (t.startsWith("SKIP")) { row.skip = t.replace(/^SKIP:?\s*/, "") || "needs more to go on"; row.skipFor = row.text; continue; }
       if (!s.st) { s.st = { ctrl: new AbortController(), text: "", note: "", key: ++genKey, t0 }; store.gens.set(row.id, s.st); }
@@ -286,7 +289,7 @@ export async function pass(includeFocused: boolean) {
 }
 
 // ---------- actions ----------
-export function setText(row: Row, text: string) { row.text = text; save(); emit(); schedulePass(); }
+export function setText(row: Row, text: string) { row.text = text; row.err = ""; save(); emit(); schedulePass(); }
 export function keep(row: Row) {
   if (!cur(row)) return;
   row.accepted = !row.accepted; row.keptAt = Date.now(); save(); emit();
@@ -361,8 +364,19 @@ export function editKept(row: Row, text: string) { row.variants[row.vi] = text; 
 export function setDoc(patch: Partial<Doc>) { Object.assign(d(), patch); save(); emit(); }
 export function setSettings(patch: Partial<Settings>) { Object.assign(S(), patch); save(); emit(); }
 export function ban(phrase: string) { if (!S().bans.includes(phrase)) setSettings({ bans: [...S().bans, phrase] }); }
-export function toMarkdown() {
-  const doc = d();
-  const parts = doc.rows.filter(r => isHeading(r) || (r.accepted && cur(r))).map(r => isHeading(r) ? r.text.trim() : cur(r)!.trim());
-  return { md: (doc.title ? `# ${doc.title}\n\n` : "") + parts.join("\n\n"), kept: doc.rows.filter(r => r.accepted).length };
+// Kept rows contribute their draft; everything else contributes your own words from the outline.
+export function toPiece(): Piece & { kept: number; yours: number } {
+  const blocks: Block[] = [];
+  let kept = 0, yours = 0;
+  for (const r of d().rows) {
+    const t = r.text.trim();
+    if (isHeading(r)) { const m = t.match(/^(#+)\s*(.*)$/)!; if (m[2]) blocks.push({ kind: "h", level: m[1]!.length, text: m[2] }); continue; }
+    if (r.accepted && cur(r)) { blocks.push({ kind: "p", text: cur(r)!.trim() }); kept++; continue; }
+    if (!hasWords(t)) continue;
+    yours++;
+    const last = blocks.at(-1); // consecutive outline lines stay one block, like the list you wrote
+    if (last?.kind === "p" && last.yours) last.text += "\n" + t;
+    else blocks.push({ kind: "p", text: t, yours: true });
+  }
+  return { title: d().title.trim(), blocks, kept, yours };
 }

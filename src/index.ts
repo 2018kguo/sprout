@@ -45,9 +45,18 @@ function argv(provider: string, model: string, system: string) {
     // ponytail: codex has no token streaming in exec --json; the whole answer lands at once
     return ["codex", "exec", "-", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
       "-c", "model_reasoning_effort=low", "-c", "mcp_servers={}", ...(model ? ["-m", model] : [])];
-  return ["claude", "-p", "--model", model || "haiku", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
+  // Haiku thinks before every draft (~650-950 hidden output tokens for a 50-word paragraph). Nothing in the CLI turns
+  // that off (MAX_THINKING_TOKENS=0, CLAUDE_CODE_DISABLE_THINKING, alwaysThinkingEnabled:false all still think);
+  // --effort low measured ~20-30% fewer output tokens and ~1.5s faster.
+  return ["claude", "-p", "--model", model || "haiku", "--effort", "low", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
     "--no-session-persistence", "--system-prompt", system,
     "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+}
+
+// One line per draft so you can see what each call costs your plan and how much came from cache.
+function logUsage(who: string, fresh = 0, cached = 0, written = 0, out = 0) {
+  const total = fresh + cached + written;
+  console.log(`[${who}] in ${total} tok (${total ? Math.round((100 * cached) / total) : 0}% cached, ${written} cache-write) · out ${out}`);
 }
 
 // Pull text out of one stdout JSON line. Returns [text, error].
@@ -55,6 +64,8 @@ function parse(line: string): [string, string] {
   let j: any;
   try { j = JSON.parse(line); } catch { return ["", ""]; }
   if (j.type === "stream_event" && j.event?.delta?.type === "text_delta") return [j.event.delta.text, ""];
+  if (j.type === "result" && j.usage) logUsage("claude", j.usage.input_tokens, j.usage.cache_read_input_tokens, j.usage.cache_creation_input_tokens, j.usage.output_tokens);
+  if (j.type === "turn.completed" && j.usage) logUsage("codex", j.usage.input_tokens - (j.usage.cached_input_tokens ?? 0), j.usage.cached_input_tokens, 0, j.usage.output_tokens);
   if (j.type === "result" && j.is_error) return ["", String(j.result ?? "claude error")];
   if (j.type === "item.completed" && j.item?.type === "agent_message") return [j.item.text, ""];
   if (j.type === "turn.failed" || j.type === "error") return ["", String(j.error?.message ?? j.message ?? "codex error")];
@@ -63,6 +74,7 @@ function parse(line: string): [string, string] {
 
 function generate(req: Request, body: { provider: string; model: string; system: string; prompt: string }) {
   const codex = body.provider === "codex";
+  if (process.env.SPROUT_DEBUG) Bun.write(`${DIR}/last-request.json`, JSON.stringify(body, null, 2));
   const proc = Bun.spawn(argv(body.provider, body.model, body.system), {
     cwd: tmpdir(), stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });

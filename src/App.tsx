@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Check, ChevronLeft, ChevronRight, CircleCheck, Copy, MoreHorizontal, PlugZap, RefreshCw, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleCheck, Copy, MoreHorizontal, PlugZap, RefreshCw, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInput, SidebarInset,
   SidebarMenu, SidebarMenuAction, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
@@ -24,10 +26,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
-  CHIPS, DEFAULT_BANS, MODELS, another, ban, connected, cur, loadConnections, openSettings, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
-  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, slopFound, splitRow, store, subscribe, toMarkdown, toss,
+  CHIPS, DEFAULT_BANS, MODELS, another, ban, connected, same, cur, loadConnections, openSettings, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
+  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, slopFound, splitRow, store, subscribe, toPiece, toss,
   type Conn, type PostSummary, type Row,
 } from "./store";
+import { FORMATS, html, markdown, plainText, slack, thread, type FormatId } from "./formats";
 import "./index.css";
 
 export function App() {
@@ -78,9 +81,7 @@ export function App() {
           <Button variant="outline" size="sm" onClick={draftAll} title="Draft every line that has no draft yet">
             <Sparkles /> Draft all
           </Button>
-          <Button variant="outline" size="sm" onClick={copy} title="Copy kept paragraphs as Markdown">
-            <Copy /> Copy
-          </Button>
+          <CopyMenu />
           <SettingsSheet />
         </div>
       </header>
@@ -102,10 +103,47 @@ export function App() {
   );
 }
 
-async function copy() {
-  const { md, kept } = toMarkdown();
-  await navigator.clipboard.writeText(md);
-  toast.success(`Copied ${kept} kept paragraph${kept === 1 ? "" : "s"} as Markdown`);
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+async function copy(format: FormatId) {
+  const piece = toPiece();
+  if (!piece.blocks.length && !piece.title) return toast("Nothing to copy yet");
+  if (format === "rich") {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([html(piece)], { type: "text/html" }),
+      "text/plain": new Blob([plainText(piece)], { type: "text/plain" }),
+    })]);
+  } else {
+    const text = format === "thread" ? thread(piece).join("\n\n---\n\n")
+      : format === "slack" ? slack(piece) : format === "plain" ? plainText(piece) : markdown(piece);
+    await navigator.clipboard.writeText(text);
+  }
+  const label = FORMATS.find(f => f.id === format)!.label;
+  const what = [piece.kept && plural(piece.kept, "kept paragraph"), piece.yours && plural(piece.yours, "outline line")].filter(Boolean).join(" + ");
+  toast.success(`Copied as ${label}`, {
+    description: format === "thread" ? `${plural(thread(piece).length, "post")}, separated by ---. ${what}` : what,
+  });
+}
+
+function CopyMenu() {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm"><Copy /> Copy <ChevronDown className="opacity-60" /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+          Kept drafts, plus your own words for lines you haven't kept
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {FORMATS.map(f => (
+          <DropdownMenuItem key={f.id} onSelect={() => copy(f.id).catch(e => toast.error(String(e)))} className="flex-col items-start gap-0">
+            <span>{f.label}</span>
+            <span className="text-xs text-muted-foreground">{f.hint}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function SaveState() {
@@ -207,7 +245,7 @@ function DraftView({ row }: { row: Row }) {
         {row.ms ? <span className="tabular-nums">{(row.ms / 1000).toFixed(1)}s</span> : null}
       </Meta>
     </>;
-  } else if (row.skip && row.skipFor === row.text && !row.accepted) {
+  } else if (row.skip && same(row.skipFor, row.text) && !row.accepted) {
     body = <Meta subtle><span className="italic">{row.skip}</span><Act onClick={() => another(row)}>Draft anyway</Act></Meta>;
   } else if (row.tossed.length && !row.accepted) {
     body = <Meta>Tossed<Act onClick={() => another(row)} k="⌘↵">Another take</Act></Meta>;
