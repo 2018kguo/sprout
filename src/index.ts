@@ -92,6 +92,49 @@ function generate(req: Request, body: { provider: string; model: string; system:
   }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }
 
+// ---------- connections: is each CLI installed and logged in? ----------
+// ponytail: we only read the CLIs' own status; login stays in the CLI (it opens a browser flow).
+export type Conn = {
+  provider: "claude" | "codex"; installed: boolean; loggedIn: boolean; version?: string;
+  method?: string; plan?: boolean; account?: string; fix?: string;
+};
+async function run(cmd: string[]) {
+  const p = Bun.spawn(cmd, { cwd: tmpdir(), stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+  const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  await p.exited;
+  return { ok: p.exitCode === 0, out: (out + "\n" + err).trim() };
+}
+async function checkClaude(): Promise<Conn> {
+  const c: Conn = { provider: "claude", installed: !!Bun.which("claude"), loggedIn: false };
+  if (!c.installed) return { ...c, fix: "curl -fsSL https://claude.ai/install.sh | bash" };
+  const [ver, auth] = await Promise.all([run(["claude", "--version"]), run(["claude", "auth", "status"])]);
+  c.version = ver.out.split(/\s/)[0];
+  try {
+    const j = JSON.parse(auth.out.slice(auth.out.indexOf("{")));
+    c.loggedIn = !!j.loggedIn;
+    if (c.loggedIn) {
+      c.plan = j.authMethod === "claude.ai";
+      c.method = c.plan ? `Claude ${j.subscriptionType ? j.subscriptionType[0].toUpperCase() + j.subscriptionType.slice(1) : "subscription"}` : "API key, billed per token";
+      c.account = j.email;
+    }
+  } catch { /* unparseable status = treat as logged out */ }
+  if (!c.loggedIn) c.fix = "claude auth login";
+  return c;
+}
+async function checkCodex(): Promise<Conn> {
+  const c: Conn = { provider: "codex", installed: !!Bun.which("codex"), loggedIn: false };
+  if (!c.installed) return { ...c, fix: "npm install -g @openai/codex" };
+  const [ver, auth] = await Promise.all([run(["codex", "--version"]), run(["codex", "login", "status"])]);
+  c.version = ver.out.split(/\s/).at(-1);
+  c.loggedIn = auth.ok && /logged in/i.test(auth.out) && !/not logged in/i.test(auth.out);
+  if (c.loggedIn) {
+    c.plan = /chatgpt/i.test(auth.out);
+    c.method = c.plan ? "ChatGPT plan" : "API key, billed per token";
+  } else c.fix = "codex login";
+  return c;
+}
+let conns = Promise.all([checkClaude(), checkCodex()]); // warm at startup
+
 // Spawns CLIs on your account: only same-origin pages may call the API.
 const sameOrigin = (req: Request) => {
   const o = req.headers.get("origin");
@@ -128,6 +171,12 @@ const server = serve({
       DELETE: guard(req => {
         db.query("DELETE FROM posts WHERE id = ?").run(req.params.id);
         return new Response(null, { status: 204 });
+      }),
+    },
+    "/api/connections": {
+      GET: guard(async req => {
+        if (new URL(req.url).searchParams.has("fresh")) conns = Promise.all([checkClaude(), checkCodex()]);
+        return Response.json(await conns);
       }),
     },
     "/api/settings": {

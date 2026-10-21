@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Check, ChevronLeft, ChevronRight, Copy, MoreHorizontal, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Check, ChevronLeft, ChevronRight, CircleCheck, Copy, MoreHorizontal, PlugZap, RefreshCw, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
@@ -23,9 +24,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
-  CHIPS, DEFAULT_BANS, MODELS, another, ban, cur, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
+  CHIPS, DEFAULT_BANS, MODELS, another, ban, connected, cur, loadConnections, openSettings, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
   marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, slopFound, splitRow, store, subscribe, toMarkdown, toss,
-  type PostSummary, type Row,
+  type Conn, type PostSummary, type Row,
 } from "./store";
 import "./index.css";
 
@@ -68,8 +69,8 @@ export function App() {
             <SelectTrigger size="sm" className="w-auto" aria-label="Model"><SelectValue /></SelectTrigger>
             <SelectContent>
               {MODELS.map(m => (
-                <SelectItem key={m.value} value={m.value}>
-                  {m.label} <span className="text-muted-foreground">· {m.hint}</span>
+                <SelectItem key={m.value} value={m.value} disabled={!connected(m.value.split(":")[0]!)}>
+                  {m.label} <span className="text-muted-foreground">· {connected(m.value.split(":")[0]!) ? m.hint : "not connected"}</span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -84,6 +85,7 @@ export function App() {
         </div>
       </header>
 
+      <ConnectionBanner />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 pt-5 pb-16">
         {doc.rows.map(r => <RowView key={r.id} row={r} only={doc.rows.length === 1} />)}
       </main>
@@ -306,7 +308,7 @@ function SettingsSheet() {
   const bans = settings.bans.filter(b => b.trim());
   const add = () => { if (phrase.trim()) { ban(phrase.trim()); setPhrase(""); } };
   return (
-    <Sheet>
+    <Sheet open={store.settingsOpen} onOpenChange={openSettings}>
       <SheetTrigger asChild>
         <Button variant="ghost" size="icon-sm" aria-label="Settings"><Settings2 /></Button>
       </SheetTrigger>
@@ -316,6 +318,8 @@ function SettingsSheet() {
           <SheetDescription>Sent with every draft. Changes save automatically.</SheetDescription>
         </SheetHeader>
         <div className="flex flex-col gap-6 px-4 pb-8">
+          <Connections />
+          <Separator />
           <section className="grid gap-2">
             <Label htmlFor="voice">Your voice</Label>
             <Textarea id="voice" rows={6} value={settings.voice} onChange={e => setSettings({ voice: e.target.value })}
@@ -429,5 +433,75 @@ function PostsSidebar() {
         </AlertDialogContent>
       </AlertDialog>
     </Sidebar>
+  );
+}
+
+// ---------- connections ----------
+const providerName = (p: string) => (p === "claude" ? "Claude" : "Codex");
+
+function ConnectionBanner() {
+  const provider = store.settings!.model.split(":")[0]!;
+  if (connected(provider)) return null;
+  const alt = MODELS.find(m => connected(m.value.split(":")[0]!));
+  return (
+    <div className="mx-auto w-full max-w-6xl px-4 pt-4">
+      <Alert>
+        <PlugZap />
+        <AlertTitle>{providerName(provider)} isn't connected</AlertTitle>
+        <AlertDescription>
+          <p>Drafts won't run until it is. It takes one command in your terminal.</p>
+          <div className="mt-1 flex gap-2">
+            <Button size="sm" onClick={() => openSettings(true)}>Set up</Button>
+            {alt && <Button size="sm" variant="outline" onClick={() => setSettings({ model: alt.value })}>Use {alt.label} instead</Button>}
+          </div>
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
+}
+
+function Connections() {
+  return (
+    <section className="grid gap-3">
+      <div className="flex items-center justify-between">
+        <Label>Connections</Label>
+        <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={store.connsLoading} onClick={() => loadConnections(true)}>
+          <RefreshCw className={cn(store.connsLoading && "animate-spin")} /> Recheck
+        </Button>
+      </div>
+      {store.conns ? store.conns.map(c => <ConnCard key={c.provider} c={c} />)
+        : <p className="text-sm text-muted-foreground">Checking…</p>}
+      <p className="text-xs text-muted-foreground">
+        Sprout runs the claude and codex CLIs on this machine, so drafts use your subscription. Log in through the CLI; Sprout stores no keys.
+      </p>
+    </section>
+  );
+}
+
+function ConnCard({ c }: { c: Conn }) {
+  const ok = c.installed && c.loggedIn;
+  return (
+    <div className="grid gap-2 rounded-lg border p-3">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium">{providerName(c.provider)}</span>
+        {c.version && <span className="text-xs text-muted-foreground">v{c.version}</span>}
+        <span className="flex-1" />
+        <Badge variant={ok ? "secondary" : "destructive"}>
+          {ok && <CircleCheck />}{ok ? c.method : c.installed ? "Not logged in" : "Not installed"}
+        </Badge>
+      </div>
+      {c.account && <p className="text-xs text-muted-foreground">{c.account}</p>}
+      {ok && !c.plan && <p className="text-xs text-amber-600 dark:text-amber-400">Using an API key: drafts bill per token, not your plan.</p>}
+      {c.fix && <>
+        <div className="flex items-center gap-2 rounded-md bg-muted py-1 pr-1 pl-2.5">
+          <code className="flex-1 truncate font-mono text-xs">{c.fix}</code>
+          <Button variant="ghost" size="icon-sm" className="size-7" aria-label="Copy command"
+            onClick={() => navigator.clipboard.writeText(c.fix!).then(() => toast("Copied. Run it in a terminal, then Recheck."))}>
+            <Copy />
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">Run this in a terminal, then Recheck.</p>
+      </>}
+    </div>
   );
 }

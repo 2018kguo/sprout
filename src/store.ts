@@ -1,3 +1,6 @@
+import type { Conn } from "./index";
+export type { Conn };
+
 // All drafting state and logic. Mutable store + version counter; React reads it via useSyncExternalStore.
 export type Row = {
   id: string; text: string; variants: string[]; vi: number; accepted: boolean; tossed: string[];
@@ -26,6 +29,9 @@ export const store = {
   postId: "",
   posts: [] as PostSummary[],
   settings: null as Settings | null,
+  conns: null as Conn[] | null,
+  connsLoading: false,
+  settingsOpen: false,
   gens: new Map<string, Gen>(),
   status: "",
   saved: "" as "" | "saving" | "saved" | "error",
@@ -73,7 +79,18 @@ export async function refreshPosts() {
   store.posts = await (await fetch("/api/posts")).json();
   emit();
 }
+export async function loadConnections(fresh = false) {
+  store.connsLoading = true; emit();
+  try { store.conns = await (await fetch(`/api/connections${fresh ? "?fresh" : ""}`)).json(); }
+  finally { store.connsLoading = false; emit(); }
+}
+// Unknown (still checking) counts as connected so nothing flashes disabled on load.
+export const connected = (provider: string) =>
+  !store.conns || store.conns.some(c => c.provider === provider && c.installed && c.loggedIn);
+export function openSettings(open: boolean) { store.settingsOpen = open; emit(); }
+
 export async function load() {
+  loadConnections();
   const [settings] = await Promise.all([fetch("/api/settings").then(r => r.json()), refreshPosts()]);
   store.settings = { voice: "", bans: DEFAULT_BANS, model: "claude:haiku", reroll: true, ...(settings ?? {}) };
   const want = location.hash.slice(1);
@@ -217,6 +234,7 @@ export async function generate(row: Row, { extra = "", replace = false, note = "
   } catch (e: any) {
     if (e.name === "AbortError" || store.gens.get(row.id) !== st) return;
     store.gens.delete(row.id); row.err = String(e.message || e); emit();
+    loadConnections(true); // a failed draft is often a logged-out CLI
   } finally { release(); }
 }
 
@@ -231,6 +249,7 @@ const focusedRowId = () => document.activeElement?.closest<HTMLElement>("[data-r
 
 export async function pass(includeFocused: boolean) {
   if (passing) return void (passAgain = true);
+  if (!connected(S().model.split(":")[0]!)) return; // the banner already says why
   const focused = focusedRowId();
   const todo = d().rows.filter(r => needsDraft(r) && (includeFocused || r.id !== focused));
   if (!todo.length) return;
@@ -258,6 +277,7 @@ export async function pass(includeFocused: boolean) {
     route(await stream(buildPassPrompt([...sent.keys()]), new AbortController().signal, t => route(t, false)), true);
   } catch (e: any) {
     for (const { row } of sent.values()) { if (row.genFor === row.text) row.genFor = undefined; row.err = String(e.message || e); }
+    loadConnections(true);
   } finally {
     for (const { row, st } of sent.values()) if (st && store.gens.get(row.id) === st) store.gens.delete(row.id);
     release(); save(); passing = false; store.status = ""; emit();
