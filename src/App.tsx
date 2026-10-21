@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleCheck, Copy, MoreHorizontal, PlugZap, RefreshCw, RotateCcw, Settings2, Sparkles, SquarePen, Trash2, Wand2, X } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
@@ -27,9 +28,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 import {
   CHIPS, DEFAULT_BANS, MODELS, another, ban, connected, same, cur, loadConnections, openSettings, deletePost, deleteRow, newPost, openPost, draftAll, editKept, emit, flip, getVersion, isHeading, keep,
-  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, slopFound, splitRow, store, subscribe, toPiece, toss,
+  marks, moveFocus, pasteLines, refine, setDoc, setRefining, setSettings, setText, splitRow, tellsIn, unfurl, URL_RE, store, subscribe, toPiece, toss,
   type Conn, type PostSummary, type Row,
 } from "./store";
+import { TELLS } from "./style";
 import { FORMATS, html, markdown, plainText, slack, thread, type FormatId } from "./formats";
 import "./index.css";
 
@@ -67,6 +69,7 @@ export function App() {
             className="min-w-0 flex-1 basis-60 bg-transparent text-xl font-semibold tracking-tight outline-none placeholder:text-muted-foreground/60"
           />
           <span className="text-xs text-primary">{store.status}</span>
+          <WordCount />
           <SaveState />
           <Select value={store.settings!.model} onValueChange={model => setSettings({ model })}>
             <SelectTrigger size="sm" className="w-auto" aria-label="Model"><SelectValue /></SelectTrigger>
@@ -146,6 +149,15 @@ function CopyMenu() {
   );
 }
 
+function WordCount() {
+  const { blocks } = toPiece();
+  const words = blocks.reduce((n, b) => n + (b.text.match(/\S+/g)?.length ?? 0), 0);
+  if (!words) return null;
+  return <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline" title="What Copy would output: kept drafts plus your words for the rest">
+    {words} words{words >= 200 ? ` · ${Math.round(words / 230)} min` : ""}
+  </span>;
+}
+
 function SaveState() {
   if (store.saved === "error") return <Badge variant="destructive" title={store.saveErr}>Not saved</Badge>;
   return <span className="w-12 text-right text-xs text-muted-foreground">{store.saved === "saving" ? "…" : store.saved}</span>;
@@ -161,6 +173,7 @@ function RowView({ row, only }: { row: Row; only: boolean }) {
   return (
     <div data-row={row.id}
       className={cn("group grid gap-x-7 gap-y-1 border-b py-2.5 md:border-0 md:py-1.5", !heading && "md:grid-cols-[minmax(200px,33%)_1fr]")}>
+      <div className="min-w-0">
       <textarea
         value={row.text} rows={1} spellCheck={false} aria-label="Outline line"
         placeholder={only ? "Jot a skeleton line… “open on the night the servers died; I was at a wedding”" : ""}
@@ -173,6 +186,8 @@ function RowView({ row, only }: { row: Row; only: boolean }) {
           heading && "pt-5 font-sans text-lg font-semibold",
         )}
       />
+      <LinkChips text={row.text} />
+      </div>
       {!heading && <DraftView row={row} />}
     </div>
   );
@@ -223,7 +238,7 @@ function DraftView({ row }: { row: Row }) {
       </Meta>
     </>;
   } else if (cur(row)) {
-    const slop = slopFound(cur(row)!).length;
+    const tells = tellsIn(cur(row)!), strong = tells.filter(h => h.strong).length;
     body = <>
       <div onClick={() => focusLine(row)}
         className={cn(draftCls, "cursor-text border-dashed border-border text-muted-foreground group-focus-within:border-primary group-focus-within:text-foreground",
@@ -241,7 +256,11 @@ function DraftView({ row }: { row: Row }) {
           <Button variant="ghost" size="icon-sm" className="size-7" onClick={() => flip(row, 1)} aria-label="Next take"><ChevronRight /></Button>
         </span>}
         <span className="flex-1" />
-        {slop > 0 && <Badge variant="destructive">{slop} slop</Badge>}
+        {tells.length > 0 && (
+          <Badge variant={strong ? "destructive" : "outline"} title={[...new Set(tells.map(h => h.name))].join(", ")}>
+            {strong ? `${strong} AI tell${strong === 1 ? "" : "s"}` : `${tells.length} to check`}
+          </Badge>
+        )}
         {row.ms ? <span className="tabular-nums">{(row.ms / 1000).toFixed(1)}s</span> : null}
       </Meta>
     </>;
@@ -259,14 +278,32 @@ function DraftView({ row }: { row: Row }) {
   );
 }
 
+// Reads with live links; click (or Enter) to edit the raw text, Esc to go back to the outline line.
 function Kept({ row }: { row: Row }) {
+  const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { ref.current!.textContent = cur(row)!; }, []); // uncontrolled so typing keeps the caret
+  useEffect(() => {
+    const el = ref.current;
+    if (!editing || !el) return;
+    el.textContent = cur(row)!; // uncontrolled so typing keeps the caret
+    el.focus();
+    const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+    getSelection()?.removeAllRanges(); getSelection()?.addRange(r);
+  }, [editing]);
+  const cls = cn(draftCls, "border-transparent text-foreground outline-none focus:border-muted-foreground/40");
+  if (!editing) return (
+    <div tabIndex={0} aria-label="Kept paragraph, click to edit"
+      className={cn(cls, "cursor-text", Date.now() - (row.keptAt ?? 0) < 1000 && "settle")}
+      onClick={e => { if (!(e.target as HTMLElement).closest("a") && getSelection()?.isCollapsed) setEditing(true); }}
+      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); setEditing(true); } }}>
+      <Hl t={cur(row)!} linksOnly />
+    </div>
+  );
   return (
-    <div ref={ref} contentEditable="plaintext-only" spellCheck
+    <div ref={ref} contentEditable="plaintext-only" spellCheck className={cls}
       onInput={e => editKept(row, e.currentTarget.innerText)}
-      onKeyDown={e => { if (e.key === "Escape") { store.focus = { id: row.id }; emit(); } }}
-      className={cn(draftCls, Date.now() - (row.keptAt ?? 0) < 1000 && "settle", "border-transparent text-foreground outline-none focus:border-muted-foreground/40")} />
+      onBlur={() => setEditing(false)}
+      onKeyDown={e => { if (e.key === "Escape") { store.focus = { id: row.id }; emit(); } }} />
   );
 }
 
@@ -303,15 +340,68 @@ function Refine({ row }: { row: Row }) {
   );
 }
 
-function Hl({ t }: { t: string }) {
+function Hl({ t, linksOnly }: { t: string; linksOnly?: boolean }) {
   const out: ReactNode[] = [];
   let at = 0;
-  marks(t).forEach(([s, e, kind], i) => {
-    out.push(t.slice(at, s), <mark key={i} className={kind}>{t.slice(s, e)}</mark>);
-    at = e;
+  marks(t).filter(m => !linksOnly || m.kind !== "tell").forEach((m, i) => {
+    out.push(t.slice(at, m.start), m.kind === "link"
+      ? <LinkPreview key={i} url={m.url!} className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary">{m.label}</LinkPreview>
+      : <mark key={i} className={m.kind === "tk" ? "tk" : m.strong ? "slop" : "tell"} title={m.name}>{t.slice(m.start, m.end)}</mark>);
+    at = m.end;
   });
   out.push(t.slice(at));
   return <>{out}</>;
+}
+
+// ---------- link previews ----------
+function LinkPreview({ url, className, children }: { url: string; className?: string; children: ReactNode }) {
+  const u = store.unfurls.get(url), data = u && !(u instanceof Promise) ? u : null;
+  return (
+    <HoverCard openDelay={250} onOpenChange={open => { if (open) unfurl(url); }}>
+      <HoverCardTrigger asChild>
+        <a href={url} target="_blank" rel="noreferrer noopener" className={className} onClick={e => e.stopPropagation()}>{children}</a>
+      </HoverCardTrigger>
+      <HoverCardContent className="w-80 overflow-hidden p-0">
+        {data ? <>
+          {data.image && <img src={data.image} alt="" className="aspect-[1.91/1] w-full border-b object-cover"
+            onError={e => { e.currentTarget.style.display = "none"; }} />}
+          <div className="grid gap-1 p-3">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {data.icon && <img src={data.icon} alt="" className="size-3.5" onError={e => { e.currentTarget.style.display = "none"; }} />}
+              <span className="truncate">{data.site}</span>
+            </div>
+            <div className="line-clamp-2 text-sm font-medium leading-snug">{data.title}</div>
+            {data.description && <p className="line-clamp-3 text-xs text-muted-foreground">{data.description}</p>}
+          </div>
+        </> : <p className="p-3 text-xs text-muted-foreground">{u === null ? "No preview for this link" : "Loading preview…"}</p>}
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+// Chips under an outline line for each URL in it. Waits for typing to settle before fetching.
+function LinkChips({ text }: { text: string }) {
+  const urls = [...new Set(text.match(URL_RE) ?? [])];
+  const [ready, setReady] = useState<string[]>([]);
+  useEffect(() => {
+    const t = setTimeout(() => { urls.forEach(unfurl); setReady(urls); }, 700);
+    return () => clearTimeout(t);
+  }, [urls.join(" ")]);
+  const shown = urls.filter(u => ready.includes(u));
+  if (!shown.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 px-2 pt-1 pb-1.5">
+      {shown.map(u => {
+        const x = store.unfurls.get(u), data = x && !(x instanceof Promise) ? x : null;
+        return (
+          <LinkPreview key={u} url={u} className="inline-flex max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground">
+            {data?.icon && <img src={data.icon} alt="" className="size-3.5 shrink-0" onError={e => { e.currentTarget.style.display = "none"; }} />}
+            <span className="truncate">{data?.title ?? new URL(u).hostname.replace(/^www\./, "")}</span>
+          </LinkPreview>
+        );
+      })}
+    </div>
+  );
 }
 
 // ---------- select draft text → ban it ----------
@@ -368,9 +458,9 @@ function SettingsSheet() {
           <section className="grid gap-3">
             <div className="flex items-baseline justify-between">
               <Label htmlFor="ban">Banned phrases <span className="font-normal text-muted-foreground">({bans.length})</span></Label>
-              <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setSettings({ bans: DEFAULT_BANS })}>
-                Reset to defaults
-              </Button>
+              {bans.length > 0 && <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground" onClick={() => setSettings({ bans: DEFAULT_BANS })}>
+                Clear all
+              </Button>}
             </div>
             <div className="flex gap-2">
               <Input id="ban" value={phrase} onChange={e => setPhrase(e.target.value)} placeholder="Add a phrase, or /regex/"
@@ -388,13 +478,22 @@ function SettingsSheet() {
                 </Badge>
               ))}
             </div>
-            <p className="text-xs text-muted-foreground">Highlighted in drafts and sent to the model. You can also select text in any draft to ban it.</p>
+            <p className="text-xs text-muted-foreground">Your own additions. Highlighted in drafts and sent to the model. You can also select text in any draft to ban it.</p>
+            <details className="text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">Built-in AI-tell checks ({TELLS.length})</summary>
+              <ul className="mt-2 grid gap-1.5">
+                {TELLS.map(t => (
+                  <li key={t.name}><span className={cn("font-medium", t.strong ? "text-destructive" : "text-foreground")}>{t.name}</span>: {t.fix}</li>
+                ))}
+              </ul>
+              <p className="mt-2">Red ones get an automatic rewrite; the rest are just underlined.</p>
+            </details>
           </section>
           <Separator />
           <section className="flex items-start justify-between gap-4">
             <div className="grid gap-1">
-              <Label htmlFor="reroll">Auto-reroll slop</Label>
-              <p className="text-xs text-muted-foreground">If a draft uses a banned phrase, rewrite it once automatically.</p>
+              <Label htmlFor="reroll">Auto-rewrite AI tells</Label>
+              <p className="text-xs text-muted-foreground">If a draft has a strong AI tell (red) or a banned phrase, rewrite it once automatically.</p>
             </div>
             <Switch id="reroll" checked={settings.reroll} onCheckedChange={reroll => setSettings({ reroll })} />
           </section>

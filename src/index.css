@@ -26,3 +26,5 @@ mark.slop { background: color-mix(in oklch, var(--destructive) 14%, transparent)
 mark.tk { background: color-mix(in oklch, oklch(0.8 0.15 80) 22%, transparent); color: oklch(0.62 0.13 70);
   border-radius: 3px; padding: 0 3px; font: 13px var(--font-mono, ui-monospace), monospace; }
 .dark mark.tk { color: oklch(0.82 0.14 80); }
+mark.tell { background: none; color: inherit; text-decoration: underline dotted color-mix(in oklch, var(--destructive) 60%, transparent);
+  text-underline-offset: 3px; }

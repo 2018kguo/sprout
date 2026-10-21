@@ -3,6 +3,8 @@ import { serve } from "bun";
 import { homedir, tmpdir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { Database } from "bun:sqlite";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import index from "./index.html";
 
 const PORT = Number(process.env.PORT ?? 4747);
@@ -15,6 +17,7 @@ db.run("PRAGMA journal_mode = WAL");
 db.run(`CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rows TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+db.run("CREATE TABLE IF NOT EXISTS unfurls (url TEXT PRIMARY KEY, data TEXT NOT NULL, fetched_at INTEGER NOT NULL)");
 db.run("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id = 1), value TEXT NOT NULL)");
 
 const insertPost = (title: string, rows: unknown[]) => {
@@ -104,6 +107,69 @@ function generate(req: Request, body: { provider: string; model: string; system:
   }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }
 
+// ---------- link previews ----------
+export type Unfurl = { url: string; title: string; description?: string; image?: string; site: string; icon?: string };
+
+// Links come from pasted text or model output, so never let them reach this machine or the local network.
+function privateIp(ip: string) {
+  if (ip.includes(":")) {
+    const v = ip.toLowerCase();
+    if (v.startsWith("::ffff:")) return privateIp(v.slice(7));
+    return v === "::1" || v === "::" || /^f[cd]|^fe[89ab]/.test(v);
+  }
+  const [a, b] = ip.split(".").map(Number) as [number, number];
+  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+}
+async function assertPublic(u: URL) {
+  if (!/^https?:$/.test(u.protocol)) throw new Error("only http(s) links");
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  if (/^localhost$|\.(?:local|internal|localhost)$/i.test(host)) throw new Error("private host");
+  // Note: checks resolved IPs but fetch re-resolves (DNS rebinding window); fine for a local single-user app
+  const ips = isIP(host) ? [host] : (await lookup(host, { all: true })).map(a => a.address);
+  if (!ips.length || ips.some(privateIp)) throw new Error("private address");
+}
+const decode = (s: string) => s.replace(/&(amp|quot|#39|apos|lt|gt|#x27|nbsp);/g, (_, e) =>
+  ({ amp: "&", quot: '"', "#39": "'", apos: "'", lt: "<", gt: ">", "#x27": "'", nbsp: " " })[e as string]!).trim();
+function metaTag(html: string, key: string) {
+  const tag = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${key}["'][^>]*>`, "i"))?.[0];
+  const v = tag?.match(/content=(["'])([\s\S]*?)\1/i)?.[2];
+  return v ? decode(v) : undefined;
+}
+async function unfurl(raw: string): Promise<Unfurl> {
+  const hit = db.query<{ data: string }, [string, number]>("SELECT data FROM unfurls WHERE url = ? AND fetched_at > ?")
+    .get(raw, Date.now() - 7 * 864e5);
+  if (hit) return JSON.parse(hit.data);
+  let u = new URL(raw), res: Response | undefined;
+  for (let hop = 0; hop < 4; hop++) { // follow redirects ourselves so every hop is checked
+    await assertPublic(u);
+    res = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(5000),
+      headers: { "user-agent": "Mozilla/5.0 (compatible; SproutPreview/1.0)", accept: "text/html" } });
+    const next = res.headers.get("location");
+    if (res.status < 300 || res.status >= 400 || !next) break;
+    u = new URL(next, u);
+  }
+  if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+  let html = "";
+  if ((res.headers.get("content-type") ?? "").includes("html")) {
+    const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+    while (html.length < 512_000 && !/<\/head>/i.test(html)) { const { value, done } = await reader.read(); if (done) break; html += value; }
+    reader.cancel();
+  }
+  const abs = (v?: string) => { try { return v ? new URL(v, u).href : undefined; } catch { return undefined; } };
+  const icon = html.match(/<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]*>/i)?.[0].match(/href=(["'])(.*?)\1/i)?.[2];
+  const data: Unfurl = {
+    url: raw,
+    title: (metaTag(html, "og:title") ?? metaTag(html, "twitter:title") ?? decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "")) || u.hostname,
+    description: (metaTag(html, "og:description") ?? metaTag(html, "description"))?.slice(0, 300),
+    image: abs(metaTag(html, "og:image") ?? metaTag(html, "twitter:image")),
+    site: metaTag(html, "og:site_name") ?? u.hostname.replace(/^www\./, ""),
+    icon: abs(icon ?? "/favicon.ico"),
+  };
+  db.query("INSERT OR REPLACE INTO unfurls (url, data, fetched_at) VALUES (?, ?, ?)").run(raw, JSON.stringify(data), Date.now());
+  return data;
+}
+
 // ---------- connections: is each CLI installed and logged in? ----------
 // Note: we only read the CLIs' own status; login stays in the CLI (it opens a browser flow).
 export type Conn = {
@@ -183,6 +249,13 @@ const server = serve({
       DELETE: guard(req => {
         db.query("DELETE FROM posts WHERE id = ?").run(req.params.id);
         return new Response(null, { status: 204 });
+      }),
+    },
+    "/api/unfurl": {
+      GET: guard(async req => {
+        const url = new URL(req.url).searchParams.get("url") ?? "";
+        try { return Response.json(await unfurl(url)); }
+        catch (e) { return Response.json({ error: String((e as Error).message ?? e) }, { status: 422 }); }
       }),
     },
     "/api/connections": {
