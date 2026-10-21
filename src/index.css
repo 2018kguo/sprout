@@ -1,0 +1,28 @@
+@import "../styles/globals.css";
+
+@layer base {
+  body { @apply bg-background text-foreground font-sans antialiased; }
+}
+
+.font-draft { font-family: "Iowan Old Style", "Palatino", Georgia, serif; }
+
+/* drafts rise into place like something materializing on the page */
+.pop { animation: pop .38s cubic-bezier(.2, 1.4, .4, 1) both; transform-origin: 0 100%; }
+.toss { animation: toss .22s ease-in forwards; }
+.settle { animation: settle .5s ease-out; }
+.live::after { content: "▍"; color: var(--primary); animation: blink 1s steps(2) infinite; }
+.wait { min-height: 58px; border-radius: var(--radius); border-color: transparent;
+  background: linear-gradient(90deg, var(--muted) 0, var(--card) 50%, var(--muted) 100%) 0 0 / 200% 100%;
+  animation: shimmer 1.1s linear infinite, pop .38s cubic-bezier(.2, 1.4, .4, 1) both; }
+@keyframes pop { from { opacity: 0; transform: rotateX(38deg) translateY(14px) scale(.94); filter: blur(5px); } }
+@keyframes toss { to { opacity: 0; transform: translateX(24px) rotateY(-14deg); filter: blur(6px); } }
+@keyframes settle { from { background: color-mix(in oklch, var(--primary) 12%, transparent); } }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .pop, .toss, .settle, .wait, .live::after { animation: none !important; } }
+
+mark.slop { background: color-mix(in oklch, var(--destructive) 14%, transparent); color: var(--destructive);
+  text-decoration: underline wavy var(--destructive); text-underline-offset: 3px; border-radius: 3px; }
+mark.tk { background: color-mix(in oklch, oklch(0.8 0.15 80) 22%, transparent); color: oklch(0.62 0.13 70);
+  border-radius: 3px; padding: 0 3px; font: 13px var(--font-mono, ui-monospace), monospace; }
+.dark mark.tk { color: oklch(0.82 0.14 80); }

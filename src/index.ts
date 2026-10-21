@@ -1,6 +1,8 @@
-// Sprout: local writing canvas. Drafts come from your logged-in `claude` / `codex` CLIs (your plan, no API keys).
+// Sprout server: drafts come from your logged-in `claude` / `codex` CLIs (your plan, no API keys).
+import { serve } from "bun";
 import { homedir, tmpdir } from "node:os";
 import { mkdirSync, renameSync } from "node:fs";
+import index from "./index.html";
 
 const PORT = Number(process.env.PORT ?? 4747);
 const DIR = process.env.SPROUT_DIR ?? `${homedir()}/.sprout`;
@@ -9,7 +11,7 @@ mkdirSync(DIR, { recursive: true });
 
 function argv(provider: string, model: string, system: string) {
   if (provider === "codex")
-    // ponytail: codex has no token streaming in exec --json; whole paragraph lands at once
+    // ponytail: codex has no token streaming in exec --json; the whole answer lands at once
     return ["codex", "exec", "-", "--json", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
       "-c", "model_reasoning_effort=low", "-c", "mcp_servers={}", ...(model ? ["-m", model] : [])];
   return ["claude", "-p", "--model", model || "haiku", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
@@ -59,30 +61,36 @@ function generate(req: Request, body: { provider: string; model: string; system:
   }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 }
 
-Bun.serve({
-  port: PORT,
-  hostname: "127.0.0.1", // spawns CLIs on your account: never expose beyond localhost
-  idleTimeout: 120,
-  async fetch(req) {
-    const url = new URL(req.url);
-    const origin = req.headers.get("origin");
-    if (origin && new URL(origin).host !== url.host) return new Response("forbidden", { status: 403 });
+// Spawns CLIs on your account: only same-origin pages may call the API.
+const sameOrigin = (req: Request) => {
+  const o = req.headers.get("origin");
+  return !o || new URL(o).host === new URL(req.url).host;
+};
+const guard = (h: (req: Request) => Response | Promise<Response>) => (req: Request) =>
+  sameOrigin(req) ? h(req) : new Response("forbidden", { status: 403 });
 
-    if (url.pathname === "/") return new Response(Bun.file(`${import.meta.dir}/index.html`));
-    if (url.pathname === "/gen" && req.method === "POST") return generate(req, await req.json());
-    if (url.pathname === "/doc" && req.method === "GET") {
-      const f = Bun.file(DOC);
-      return (await f.exists()) ? new Response(f) : Response.json(null);
-    }
-    if (url.pathname === "/doc" && req.method === "PUT") {
-      const text = await req.text();
-      JSON.parse(text); // refuse to overwrite the doc with garbage
-      await Bun.write(`${DOC}.tmp`, text);
-      renameSync(`${DOC}.tmp`, DOC);
-      return new Response("ok");
-    }
-    return new Response("not found", { status: 404 });
+const server = serve({
+  port: PORT,
+  hostname: "127.0.0.1", // never expose beyond localhost
+  idleTimeout: 120,
+  routes: {
+    "/*": index,
+    "/gen": { POST: guard(async req => generate(req, await req.json())) },
+    "/doc": {
+      GET: guard(async () => {
+        const f = Bun.file(DOC);
+        return (await f.exists()) ? new Response(f) : Response.json(null);
+      }),
+      PUT: guard(async req => {
+        const text = await req.text();
+        JSON.parse(text); // refuse to overwrite the doc with garbage
+        await Bun.write(`${DOC}.tmp`, text);
+        renameSync(`${DOC}.tmp`, DOC);
+        return new Response("ok");
+      }),
+    },
   },
   error(e) { return new Response(String(e), { status: 400 }); },
+  development: process.env.NODE_ENV !== "production" && { hmr: true, console: true },
 });
-console.log(`sprout → http://localhost:${PORT}  (doc: ${DOC})`);
+console.log(`sprout → ${server.url}  (doc: ${DOC})`);
