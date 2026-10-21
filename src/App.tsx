@@ -54,6 +54,10 @@ export function App() {
     return () => mq.removeEventListener("change", set);
   }, []);
   const doc = store.doc;
+  useEffect(() => {
+    const t = (doc?.title.trim() || doc?.rows.find(r => r.text.trim())?.text.trim().replace(/^#+\s*/, ""))?.slice(0, 60);
+    document.title = `${store.gens.size ? "✎ " : ""}${t ? `${t} · ` : ""}Sprout`;
+  });
   if (!doc) return null;
 
   return (

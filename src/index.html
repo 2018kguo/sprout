@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sprout</title>
+    <meta name="description" content="Jot a skeleton, drafts grow beside it." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <!-- set dark before first paint so dark-mode users don't get a white flash -->
+    <script>if (matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.classList.add("dark")</script>
     <script type="module" src="./frontend.tsx" async></script>
   </head>
   <body>
