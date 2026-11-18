@@ -19,6 +19,7 @@ test.each([
   ["Despite these challenges, the team thrived.", "challenges brush-off"],
   ["We hit the supervision paradox.", "invented label"],
   ["He left. Then silence. Nothing.", "staccato fragments"],
+  ["Risk is cited most. Sixty-four letters omit risk. Sixty-one bury it. Nineteen fault the trial.", "stacked facts"],
   ["The fix quietly worked.", "magic adverb"],
   ["It touched everything from hiring to onboarding to payroll.", "false range"],
   ["A pivotal moment for the team.", "AI vocabulary"],
@@ -35,6 +36,7 @@ test.each([
   "Is it slower? Sometimes, when someone forgets to update the doc for a few days in a row.",
   "We went from three repos to one, and builds got faster.",
   "The bill was not small, but it was predictable.",
+  "Risk is cited most, but 19 of the 34 letters about pieces for doctors fault the trial instead, because the study could not support the claim.",
 ])("leaves plain human prose alone: %p", text => {
   expect(findTells(text).filter(h => h.strong)).toEqual([]);
 });

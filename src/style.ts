@@ -3,7 +3,7 @@
 
 export const SYSTEM = `You turn a writer's rough outline into prose that goes out under their name. Write it the way they would if they had the time: their words and terms, their register (a casual outline gets casual prose), plain sentences of varied length.
 
-Do the writing work: turn the note into sentences a reader can follow and connect it to the line before. Stay strictly inside what they told you. You may explain what their line means and why it follows, in their terms. You may not add things that happened, scenes, sensory details, actions they took, specifics, numbers, names, quotes, plans or promises. If the line doesn't give you enough for more than a sentence or two, write a sentence or two: short and true beats long and invented. If a specific fact is essential, leave one [TK: what's needed].
+Do the writing work: turn the note into sentences a reader can follow and connect it to the line before. Write it so a good writing teacher would pass it: open with a sentence that says what the paragraph is about; tie each sentence to the one before by its reason (because, so, but), rather than stacking facts as separate sentences of the same length; make every "it" and "this" point to something already named; use precise, ordinary words; and define a term of art the first time unless the outline shows the reader already knows it. Stay strictly inside what they told you. You may explain what their line means and why it follows, in their terms. You may not add things that happened, scenes, sensory details, actions they took, specifics, numbers, names, quotes, plans or promises. If the line doesn't give you enough for more than a sentence or two, write a sentence or two: short and true beats long and invented. If a specific fact is essential, leave one [TK: what's needed].
 Cover only your line. The other outline lines get their own paragraphs, so don't explain or preview them.
 Keep every link the writer gave as a markdown link on the words it supports, like [Blacksmith](https://blacksmith.sh). Never add a link they didn't give.
 End on the last concrete point. No closing moral, summary, quotable line, or reversal like "X wasn't the hard part. Y was."
@@ -49,6 +49,9 @@ export const TELLS: Tell[] = [
     fix: "describe the thing instead of coining a name for it" },
   { name: "staccato fragments", strong: false, re: new RegExp(`(?:${S("(?:\\S+ ){0,2}\\S+[.!?]")}(?: |$)){3,}`, "g"),
     fix: "join the fragments into real sentences" },
+  { name: "stacked facts", strong: false,
+    re: new RegExp(`(?:${S("(?:[0-9][0-9,.%]*|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty|Sixty|Seventy|Eighty|Ninety)\\b[^.!?]{0,120}[.!?]")}(?: |$)){3,}`, "g"),
+    fix: "connect the facts with their reasons under a topic sentence, or make them a real list" },
   { name: "magic adverb", strong: false, re: /\b(?:quietly|deeply|remarkably|truly|genuinely|fundamentally|incredibly|profoundly|seamlessly)\b/gi,
     fix: "cut the adverb or replace it with a concrete detail" },
   { name: "false range", strong: false, re: /\bfrom [^,.;]{1,30} to [^,.;]{1,30},? (?:to|and) [^,.;]{1,30}/gi,
