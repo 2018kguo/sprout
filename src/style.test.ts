@@ -20,6 +20,7 @@ test.each([
   ["We hit the supervision paradox.", "invented label"],
   ["He left. Then silence. Nothing.", "staccato fragments"],
   ["Risk is cited most. Sixty-four letters omit risk. Sixty-one bury it. Nineteen fault the trial.", "stacked facts"],
+  ["The trial flaws in the letters fall into a few kinds.", "empty topic sentence"],
   ["The fix quietly worked.", "magic adverb"],
   ["It touched everything from hiring to onboarding to payroll.", "false range"],
   ["A pivotal moment for the team.", "AI vocabulary"],
